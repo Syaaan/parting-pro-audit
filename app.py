@@ -1057,8 +1057,8 @@ with tab2:
     """, unsafe_allow_html=True)
 
     # ── Credentials ───────────────────────────────────────────────────────────
-    # Account ID always from secrets; session/CSRF from secrets unless expired
-    zap_account_id  = _secret("ZAPIER_ACCOUNT_ID")
+    # Account ID is fixed; session/CSRF from secrets unless expired
+    zap_account_id  = _secret("ZAPIER_ACCOUNT_ID") or "22022304"
     zap_session_sec = _secret("ZAPIER_SESSION")
     zap_csrf_sec    = _secret("ZAPIER_CSRF")
     creds_expired   = st.session_state.get("zap_creds_expired", False)
