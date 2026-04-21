@@ -248,8 +248,8 @@ def _zap_headers(session_token, csrf_token):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     }
 
-def fetch_zap_runs_for_date(session_token, csrf_token, account_id, target_date_str):
-    """Paginate Zapier GraphQL API; return only runs matching target_date_str."""
+def fetch_zap_runs_for_range(session_token, csrf_token, account_id, start_date_str, end_date_str):
+    """Paginate Zapier GraphQL API; return runs between start_date and end_date (inclusive)."""
     hdrs = _zap_headers(session_token, csrf_token)
     runs = []
     offset = 0
@@ -284,17 +284,17 @@ def fetch_zap_runs_for_date(session_token, csrf_token, account_id, target_date_s
 
         edges = data["data"]["zapRuns"]["edges"]
         has_next = data["data"]["zapRuns"]["pageInfo"]["hasNextPage"]
-        past_target = False
+        past_range = False
 
         for run in edges:
             run_date = run["startTime"][:10]
-            if run_date == target_date_str:
+            if start_date_str <= run_date <= end_date_str:
                 runs.append(run)
-            elif run_date < target_date_str:
-                past_target = True
+            elif run_date < start_date_str:
+                past_range = True
                 break
 
-        if past_target or not has_next:
+        if past_range or not has_next:
             break
 
         offset += limit
@@ -1091,14 +1091,16 @@ with tab2:
         st.success("✅ Zapier credentials loaded from secrets.")
 
     # ── Controls ──────────────────────────────────────────────────────────────
-    col_date, col_btn = st.columns([2, 1])
+    col_date, col_btn = st.columns([3, 1])
     with col_date:
-        yesterday = datetime.date.today() - datetime.timedelta(days=1)
-        audit_date = st.date_input(
-            "Audit Date",
-            value=yesterday,
-            max_value=datetime.date.today(),
-            key="zap_audit_date_picker"
+        today     = datetime.date.today()
+        yesterday = today - datetime.timedelta(days=1)
+        date_range = st.date_input(
+            "Date Range",
+            value=(yesterday, today),
+            max_value=today,
+            key="zap_audit_date_picker",
+            help="Select a start and end date. Single day = click the same date twice."
         )
     with col_btn:
         st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
@@ -1112,19 +1114,23 @@ with tab2:
             st.error("❌ ZAPIER_ACCOUNT_ID not found in Streamlit secrets.")
         elif not (zap_session and zap_csrf):
             st.error("Please enter your Zapier session credentials above.")
+        elif not isinstance(date_range, (list, tuple)) or len(date_range) != 2:
+            st.error("Please select both a start and end date.")
         else:
-            target_str = audit_date.strftime("%Y-%m-%d")
-            with st.spinner(f"Fetching Zapier run history for {target_str}…"):
+            start_str = date_range[0].strftime("%Y-%m-%d")
+            end_str   = date_range[1].strftime("%Y-%m-%d")
+            label     = start_str if start_str == end_str else f"{start_str} → {end_str}"
+            with st.spinner(f"Fetching Zapier run history for {label}…"):
                 try:
-                    runs = fetch_zap_runs_for_date(
-                        zap_session, zap_csrf, zap_account_id, target_str
+                    runs = fetch_zap_runs_for_range(
+                        zap_session, zap_csrf, zap_account_id, start_str, end_str
                     )
                     summaries = build_zap_summaries(runs)
                     flags     = detect_zap_flags(summaries)
                     st.session_state["zap_runs"]       = runs
                     st.session_state["zap_summaries"]  = summaries
                     st.session_state["zap_flags"]       = flags
-                    st.session_state["zap_audit_label"] = target_str
+                    st.session_state["zap_audit_label"] = label
                     st.session_state["zap_creds_expired"] = False
                     st.success(f"✅ Fetched {len(runs):,} runs across {len(summaries)} zap(s).")
                 except requests.exceptions.HTTPError as e:
