@@ -1057,32 +1057,38 @@ with tab2:
     """, unsafe_allow_html=True)
 
     # ── Credentials ───────────────────────────────────────────────────────────
-    zap_session    = _secret("ZAPIER_SESSION")
-    zap_csrf       = _secret("ZAPIER_CSRF")
-    zap_account_id = _secret("ZAPIER_ACCOUNT_ID")
-    creds_from_secrets = bool(zap_session and zap_csrf and zap_account_id)
+    # Account ID always from secrets; session/CSRF from secrets unless expired
+    zap_account_id  = _secret("ZAPIER_ACCOUNT_ID")
+    zap_session_sec = _secret("ZAPIER_SESSION")
+    zap_csrf_sec    = _secret("ZAPIER_CSRF")
+    creds_expired   = st.session_state.get("zap_creds_expired", False)
+    no_secrets      = not (zap_session_sec and zap_csrf_sec)
 
-    if not creds_from_secrets:
-        with st.expander("🔑 Zapier Credentials", expanded=True):
-            st.info(
-                "Credentials not found in Streamlit secrets. "
-                "Enter them below — they're only used for this session."
+    if creds_expired or no_secrets:
+        if creds_expired:
+            st.warning(
+                "⚠️ Your Zapier session has expired. "
+                "Paste fresh cookies below to continue."
             )
-            with st.expander("❓ How to get your credentials", expanded=False):
-                st.markdown("""
-                1. Log into [zapier.com](https://zapier.com) in Chrome
-                2. Open DevTools (`F12`) → **Application** → **Cookies** → `zapier.com`
-                3. Copy the value of `zapsession` → paste as **Session Token**
-                4. Copy the value of `csrftoken` → paste as **CSRF Token**
-                5. For **Account ID**: open DevTools → **Network** tab → reload the page
-                   → find a request to `zapier.com/api/reporting/graphql` → look in the
-                   request payload for your numeric account ID (e.g. `22022304`)
+        else:
+            st.info("Zapier session credentials not found in secrets — enter them below.")
 
-                Credentials expire in 1–4 weeks. If you get auth errors, refresh them.
-                """)
-            zap_session    = st.text_input("Session Token (zapsession cookie)", type="password", key="zap_session_input")
-            zap_csrf       = st.text_input("CSRF Token (csrftoken cookie)",     type="password", key="zap_csrf_input")
-            zap_account_id = st.text_input("Account ID (numeric)",                               key="zap_account_input")
+        with st.expander("❓ How to get fresh cookies", expanded=creds_expired):
+            st.markdown("""
+            1. Log into [zapier.com](https://zapier.com) in Chrome
+            2. Open DevTools (`F12`) → **Application** → **Cookies** → `zapier.com`
+            3. Copy the value of `zapsession` → paste as **Session Token**
+            4. Copy the value of `csrftoken` → paste as **CSRF Token**
+
+            Cookies expire every 1–4 weeks.
+            """)
+        zap_session = st.text_input("Session Token (zapsession cookie)", type="password", key="zap_session_input")
+        zap_csrf    = st.text_input("CSRF Token (csrftoken cookie)",     type="password", key="zap_csrf_input")
+    else:
+        # Credentials loaded from secrets — ready to go
+        zap_session = zap_session_sec
+        zap_csrf    = zap_csrf_sec
+        st.success("✅ Zapier credentials loaded from secrets.")
 
     # ── Controls ──────────────────────────────────────────────────────────────
     col_date, col_btn = st.columns([2, 1])
@@ -1102,8 +1108,10 @@ with tab2:
 
     # ── Run audit ─────────────────────────────────────────────────────────────
     if run_zap_audit:
-        if not (zap_session and zap_csrf and zap_account_id):
-            st.error("Please provide all three Zapier credentials above.")
+        if not zap_account_id:
+            st.error("❌ ZAPIER_ACCOUNT_ID not found in Streamlit secrets.")
+        elif not (zap_session and zap_csrf):
+            st.error("Please enter your Zapier session credentials above.")
         else:
             target_str = audit_date.strftime("%Y-%m-%d")
             with st.spinner(f"Fetching Zapier run history for {target_str}…"):
@@ -1115,12 +1123,14 @@ with tab2:
                     flags     = detect_zap_flags(summaries)
                     st.session_state["zap_runs"]       = runs
                     st.session_state["zap_summaries"]  = summaries
-                    st.session_state["zap_flags"]      = flags
+                    st.session_state["zap_flags"]       = flags
                     st.session_state["zap_audit_label"] = target_str
+                    st.session_state["zap_creds_expired"] = False
                     st.success(f"✅ Fetched {len(runs):,} runs across {len(summaries)} zap(s).")
                 except requests.exceptions.HTTPError as e:
                     if e.response is not None and e.response.status_code in (401, 403):
-                        st.error("❌ Auth failed — your Zapier session has expired. Refresh your cookies and try again.")
+                        st.session_state["zap_creds_expired"] = True
+                        st.rerun()
                     else:
                         st.error(f"❌ HTTP error: {e}")
                 except Exception as e:
