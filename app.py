@@ -36,9 +36,9 @@ PLACEHOLDER_PATTERNS = [
 
 # ── Zapier Config ─────────────────────────────────────────────────────────────
 ZAPIER_GQL_URL = "https://zapier.com/api/reporting/graphql"
-ZAP_FAILURE_RATE_THRESHOLD = 10    # % error rate to flag
-ZAP_VOLUME_SPIKE_THRESHOLD  = 3.0  # x daily average
-ZAP_VOLUME_DROP_THRESHOLD   = 0.2  # fraction of daily average
+ZAP_FAILURE_RATE_THRESHOLD = 10
+ZAP_VOLUME_SPIKE_THRESHOLD  = 3.0
+ZAP_VOLUME_DROP_THRESHOLD   = 0.2
 
 # ═════════════════════════════════════════════════════════════════════════════
 # AIRTABLE HELPERS
@@ -255,7 +255,6 @@ def _zap_headers(session_token, csrf_token):
     }
 
 def fetch_zap_runs_for_range(session_token, csrf_token, account_id, start_date_str, end_date_str):
-    """Paginate Zapier GraphQL API; return runs between start_date and end_date (inclusive)."""
     hdrs = _zap_headers(session_token, csrf_token)
     runs = []
     offset = 0
@@ -309,7 +308,6 @@ def fetch_zap_runs_for_range(session_token, csrf_token, account_id, start_date_s
     return runs
 
 def build_zap_summaries(runs):
-    """Aggregate runs into per-zap summary stats."""
     zap_map = {}
     for run in runs:
         zap_id = run["zap"]["id"]
@@ -355,7 +353,6 @@ def build_zap_summaries(runs):
     return rows
 
 def detect_zap_flags(summaries):
-    """Apply rule-based flag detection to zap summaries."""
     flags = []
     for z in summaries:
         title = z["Zap Title"]
@@ -647,7 +644,6 @@ section[data-testid="stMain"] .vega-embed .mark-text text {
 }
 
 .hero, .hero * { color: inherit; }
-section[data-testid="stSidebar"] * { color: rgba(255,255,255,0.85) !important; }
 
 /* ── Sidebar ── */
 section[data-testid="stSidebar"] {
@@ -672,6 +668,30 @@ section[data-testid="stSidebar"] hr {
     border-color: rgba(255,255,255,0.1) !important;
 }
 
+/* ── Sidebar radio nav ── */
+section[data-testid="stSidebar"] .stRadio > div {
+    gap: 4px !important;
+}
+section[data-testid="stSidebar"] .stRadio label {
+    background: rgba(255,255,255,0.05) !important;
+    border-radius: 8px !important;
+    padding: 10px 14px !important;
+    font-size: 14px !important;
+    font-weight: 500 !important;
+    cursor: pointer !important;
+    transition: background 0.15s !important;
+    display: flex !important;
+    align-items: center !important;
+}
+section[data-testid="stSidebar"] .stRadio label:hover {
+    background: rgba(255,255,255,0.12) !important;
+}
+section[data-testid="stSidebar"] .stRadio [aria-checked="true"] + div label,
+section[data-testid="stSidebar"] .stRadio label:has(input:checked) {
+    background: rgba(255,255,255,0.18) !important;
+    font-weight: 600 !important;
+}
+
 /* ── Download Button ── */
 div[data-testid="stDownloadButton"] > button {
     background: #1a2b4a !important;
@@ -683,27 +703,6 @@ div[data-testid="stDownloadButton"] > button {
 }
 div[data-testid="stDownloadButton"] > button:hover {
     background: #243860 !important;
-}
-
-/* ── Tabs ── */
-.stTabs [data-baseweb="tab-list"] {
-    gap: 8px;
-    background: white;
-    border-radius: 12px;
-    padding: 8px;
-    border: 1px solid #e4e7ef;
-    margin-bottom: 24px;
-}
-.stTabs [data-baseweb="tab"] {
-    border-radius: 8px !important;
-    padding: 10px 24px !important;
-    font-weight: 500 !important;
-    font-size: 14px !important;
-    color: #4a5568 !important;
-}
-.stTabs [aria-selected="true"] {
-    background: #1a2b4a !important;
-    color: white !important;
 }
 
 /* ── Dataframe ── */
@@ -721,42 +720,126 @@ hr { border-color: #e4e7ef !important; margin: 24px 0 !important; }
 .task-title-done { font-size:14px; font-weight:500; color:#9aa5b4; text-decoration:line-through; }
 .task-desc { font-size:12px; color:#6b7a94; margin-top:2px; }
 .overdue { color:#e05252 !important; font-weight:600 !important; }
-
-/* ── Task Tracker — broad input/tab fixes ── */
-/* Force all inputs in main area to light theme */
-section[data-testid="stMain"] input,
-section[data-testid="stMain"] textarea {
-    background-color: #ffffff !important;
-    color: #1a2b4a !important;
-    border: 1px solid #c8cdd8 !important;
-    border-radius: 8px !important;
-}
-section[data-testid="stMain"] input::placeholder,
-section[data-testid="stMain"] textarea::placeholder {
-    color: #9aa5b4 !important;
-}
-/* Select/dropdown backgrounds */
-section[data-testid="stMain"] [data-baseweb="select"] > div:first-child {
-    background-color: #ffffff !important;
-    border: 1px solid #c8cdd8 !important;
-}
-section[data-testid="stMain"] [data-baseweb="select"] span,
-section[data-testid="stMain"] [data-baseweb="select"] div {
-    color: #1a2b4a !important;
-}
-/* Tab buttons — both outer and inner tabs */
-button[role="tab"] {
-    color: #4a5568 !important;
-    font-weight: 500 !important;
-}
-button[role="tab"][aria-selected="true"] {
-    color: #1a2b4a !important;
-    font-weight: 700 !important;
-}
 </style>
 """, unsafe_allow_html=True)
 
-# ── Task Tracker init ────────────────────────────────────────────────────────
+# ═════════════════════════════════════════════════════════════════════════════
+# TASK TRACKER HELPERS
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _priority_pill(p):
+    icons = {"P1": "🔴", "P2": "🟠", "P3": "⚪"}
+    cls   = {"P1": "pill-p1", "P2": "pill-p2", "P3": "pill-p3"}
+    return f'<span class="{cls.get(p,"pill-p3")}">{icons.get(p,"")} {p}</span>'
+
+def _is_overdue(task):
+    if task.get("status") == "done" or task.get("type") != "one-off":
+        return False
+    due = task.get("due_date")
+    if not due:
+        return False
+    try:
+        return date.fromisoformat(str(due)) < date.today()
+    except ValueError:
+        return False
+
+def _render_task_row(task):
+    tid     = task["id"]
+    is_done = task.get("status") == "done"
+    col_chk, col_info, col_type, col_due, col_edit, col_del = st.columns([0.04, 0.52, 0.1, 0.18, 0.08, 0.08])
+
+    with col_chk:
+        checked = st.checkbox("", value=is_done, key=f"chk_{tid}", label_visibility="collapsed")
+        if checked != is_done:
+            update_task(tid, {"status": "done" if checked else "todo"})
+            st.session_state.editing_task_id = st.session_state.deleting_task_id = None
+            st.rerun()
+
+    with col_info:
+        title_cls = "task-title-done" if is_done else "task-title"
+        desc_html = f'<div class="task-desc">{task["description"]}</div>' if task.get("description") else ""
+        st.markdown(f'<div class="{title_cls}">{_priority_pill(task.get("priority","P3"))} {task["title"]}</div>{desc_html}', unsafe_allow_html=True)
+
+    with col_type:
+        st.markdown(f'<div style="margin-top:6px;"><span class="type-badge">{task.get("type","one-off")}</span></div>', unsafe_allow_html=True)
+
+    with col_due:
+        due = task.get("due_date")
+        if due:
+            cls = "overdue" if _is_overdue(task) else ""
+            flag = " ⚠️" if _is_overdue(task) else ""
+            st.markdown(f'<div style="margin-top:8px;"><span class="{cls}" style="font-size:12px;">📅 {due}{flag}</span></div>', unsafe_allow_html=True)
+
+    with col_edit:
+        editing_this = st.session_state.editing_task_id == tid
+        if st.button("✖️" if editing_this else "✏️", key=f"edit_btn_{tid}", help="Edit"):
+            st.session_state.editing_task_id  = None if editing_this else tid
+            st.session_state.deleting_task_id = None
+            st.rerun()
+
+    with col_del:
+        deleting_this = st.session_state.deleting_task_id == tid
+        if st.button("✖️" if deleting_this else "🗑️", key=f"del_btn_{tid}", help="Delete"):
+            st.session_state.deleting_task_id = None if deleting_this else tid
+            st.session_state.editing_task_id  = None
+            st.rerun()
+
+    if st.session_state.editing_task_id == tid:
+        with st.form(key=f"edit_form_{tid}"):
+            st.markdown("**Edit Task**")
+            e_title = st.text_input("Title", value=task.get("title", ""))
+            e_desc  = st.text_area("Description", value=task.get("description", ""), height=70)
+            _types  = ["daily", "weekly", "monthly", "one-off"]
+            e_type  = st.selectbox("Type", _types, index=_types.index(task.get("type", "one-off")))
+            _pris   = ["P1", "P2", "P3"]
+            e_pri   = st.selectbox("Priority", _pris, index=_pris.index(task.get("priority", "P2")))
+            raw_due = task.get("due_date")
+            e_due   = st.date_input("Due Date", value=date.fromisoformat(raw_due) if raw_due else None)
+            s_col, c_col = st.columns(2)
+            with s_col: save_btn   = st.form_submit_button("💾 Save",  use_container_width=True)
+            with c_col: cancel_btn = st.form_submit_button("Cancel", use_container_width=True)
+        if save_btn:
+            update_task(tid, {"title": e_title.strip(), "description": e_desc.strip(),
+                              "type": e_type, "priority": e_pri,
+                              "due_date": str(e_due) if e_due else None})
+            st.session_state.editing_task_id = None
+            st.rerun()
+        if cancel_btn:
+            st.session_state.editing_task_id = None
+            st.rerun()
+
+    if st.session_state.deleting_task_id == tid:
+        st.warning(f'Delete **"{task["title"]}"**? This cannot be undone.')
+        dc, ac = st.columns(2)
+        with dc:
+            if st.button("🗑️ Confirm", key=f"confirm_del_{tid}", use_container_width=True):
+                delete_task(tid)
+                st.session_state.deleting_task_id = None
+                st.rerun()
+        with ac:
+            if st.button("Cancel", key=f"abort_del_{tid}", use_container_width=True):
+                st.session_state.deleting_task_id = None
+                st.rerun()
+
+    st.markdown("<hr style='margin:4px 0; border-color:#f0f2f7;'>", unsafe_allow_html=True)
+
+
+def _render_task_tab(filter_type, all_tasks):
+    filtered = all_tasks if filter_type == "all" else [t for t in all_tasks if t.get("type") == filter_type]
+    if not filtered:
+        st.markdown("<div style='padding:32px 0; text-align:center; color:#9aa5b4; font-size:14px;'>No tasks yet — add one using the sidebar form.</div>", unsafe_allow_html=True)
+        return
+    pri_ord    = {"P1": 0, "P2": 1, "P3": 2}
+    status_ord = {"todo": 0, "in-progress": 1, "done": 2}
+    filtered   = sorted(filtered, key=lambda t: (status_ord.get(t.get("status","todo"), 0), pri_ord.get(t.get("priority","P3"), 2)))
+    n_done     = sum(1 for t in filtered if t.get("status") == "done")
+    n_overdue  = sum(1 for t in filtered if _is_overdue(t))
+    ov_badge   = f' &nbsp;<span style="color:#e05252;font-weight:600;">⚠️ {n_overdue} overdue</span>' if n_overdue else ""
+    st.markdown(f'<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #e4e7ef;"><strong style="color:#1a2b4a;">{len(filtered)}</strong> tasks &nbsp;·&nbsp; <span style="color:#1a9e5c;font-weight:600;">✅ {n_done} done</span>{ov_badge}</div>', unsafe_allow_html=True)
+    for t in filtered:
+        _render_task_row(t)
+
+# ── Task Tracker init ─────────────────────────────────────────────────────────
 for _k in ("editing_task_id", "deleting_task_id"):
     if _k not in st.session_state:
         st.session_state[_k] = None
@@ -775,6 +858,9 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
+run_phones   = False
+run_messages = False
+
 with st.sidebar:
     st.markdown("""
     <div style="text-align:center; padding: 16px 0 8px 0;">
@@ -784,42 +870,51 @@ with st.sidebar:
     """, unsafe_allow_html=True)
     st.markdown("---")
 
-    st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Airtable Audit</div>", unsafe_allow_html=True)
-    run_phones = st.button("📞  Run Phone Audit", use_container_width=True)
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    run_messages = st.button("💬  Run Message Audit", use_container_width=True)
+    st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:10px;'>Menu</div>", unsafe_allow_html=True)
+    page = st.radio(
+        "Navigate",
+        options=["📋  Airtable Audit", "⚡  Zapier Audit", "✅  Tasks"],
+        label_visibility="collapsed",
+        key="nav_page",
+    )
+    st.markdown("---")
 
-    st.markdown("---")
-    st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:8px;'>Connected Bases</div>", unsafe_allow_html=True)
-    for b in BASE_IDS:
-        st.markdown(f"<div style='font-size:12px; opacity:0.7; padding: 4px 0;'>• {b}</div>", unsafe_allow_html=True)
-    st.markdown("---")
-    st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Add Task</div>", unsafe_allow_html=True)
-    with st.form("sidebar_add_task", clear_on_submit=True):
-        _title = st.text_input("Title *", placeholder="What needs to be done?")
-        _desc  = st.text_area("Description", placeholder="Optional…", height=60)
-        _type  = st.selectbox("Type", ["daily", "weekly", "monthly", "one-off"])
-        _pri   = st.selectbox("Priority", ["P1", "P2", "P3"], index=1)
-        _due   = st.date_input("Due Date", value=None) if _type == "one-off" else None
-        _sub   = st.form_submit_button("➕ Add Task", use_container_width=True)
-    if _sub:
-        if _title.strip():
-            add_task({"title": _title.strip(), "description": _desc.strip(),
-                      "type": _type, "priority": _pri,
-                      "due_date": str(_due) if _due else None})
-            st.rerun()
-        else:
-            st.warning("Title required.")
-    st.markdown("---")
+    if page == "📋  Airtable Audit":
+        st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Audit Controls</div>", unsafe_allow_html=True)
+        run_phones   = st.button("📞  Run Phone Audit",   use_container_width=True)
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+        run_messages = st.button("💬  Run Message Audit", use_container_width=True)
+        st.markdown("---")
+        st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:8px;'>Connected Bases</div>", unsafe_allow_html=True)
+        for b in BASE_IDS:
+            st.markdown(f"<div style='font-size:12px; opacity:0.7; padding: 4px 0;'>• {b}</div>", unsafe_allow_html=True)
+        st.markdown("---")
+
+    elif page == "✅  Tasks":
+        st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Add Task</div>", unsafe_allow_html=True)
+        with st.form("sidebar_add_task", clear_on_submit=True):
+            _title = st.text_input("Title *", placeholder="What needs to be done?")
+            _desc  = st.text_area("Description", placeholder="Optional…", height=60)
+            _type  = st.selectbox("Type", ["daily", "weekly", "monthly", "one-off"])
+            _pri   = st.selectbox("Priority", ["P1", "P2", "P3"], index=1)
+            _due   = st.date_input("Due Date", value=None) if _type == "one-off" else None
+            _sub   = st.form_submit_button("➕ Add Task", use_container_width=True)
+        if _sub:
+            if _title.strip():
+                add_task({"title": _title.strip(), "description": _desc.strip(),
+                          "type": _type, "priority": _pri,
+                          "due_date": str(_due) if _due else None})
+                st.rerun()
+            else:
+                st.warning("Title required.")
+        st.markdown("---")
+
     st.markdown("<div style='font-size:11px; opacity:0.4; text-align:center;'>Parting Pro Internal · 2025</div>", unsafe_allow_html=True)
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3 = st.tabs(["  📋  Airtable Audit  ", "  ⚡  Zapier Audit  ", "  ✅  Tasks  "])
-
 # ═════════════════════════════════════════════════════════════════════════════
-# TAB 1 — AIRTABLE AUDIT
+# PAGE — AIRTABLE AUDIT
 # ═════════════════════════════════════════════════════════════════════════════
-with tab1:
+if page == "📋  Airtable Audit":
     # ── Phone Audit ───────────────────────────────────────────────────────────
     st.markdown("""
     <div class="section-wrap">
@@ -1113,9 +1208,9 @@ with tab1:
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ═════════════════════════════════════════════════════════════════════════════
-# TAB 2 — ZAPIER AUDIT
+# PAGE — ZAPIER AUDIT
 # ═════════════════════════════════════════════════════════════════════════════
-with tab2:
+elif page == "⚡  Zapier Audit":
     st.markdown("""
     <div class="section-wrap">
         <div class="section-head">
@@ -1127,8 +1222,6 @@ with tab2:
         </div>
     """, unsafe_allow_html=True)
 
-    # ── Credentials ───────────────────────────────────────────────────────────
-    # Account ID is fixed; session/CSRF from secrets unless expired
     zap_account_id  = _secret("ZAPIER_ACCOUNT_ID") or "22022304"
     zap_session_sec = _secret("ZAPIER_SESSION")
     zap_csrf_sec    = _secret("ZAPIER_CSRF")
@@ -1156,12 +1249,10 @@ with tab2:
         zap_session = st.text_input("Session Token (zapsession cookie)", type="password", key="zap_session_input")
         zap_csrf    = st.text_input("CSRF Token (csrftoken cookie)",     type="password", key="zap_csrf_input")
     else:
-        # Credentials loaded from secrets — ready to go
         zap_session = zap_session_sec
         zap_csrf    = zap_csrf_sec
         st.success("✅ Zapier credentials loaded from secrets.")
 
-    # ── Controls ──────────────────────────────────────────────────────────────
     col_date, col_btn = st.columns([3, 1])
     with col_date:
         today     = datetime.date.today()
@@ -1179,7 +1270,6 @@ with tab2:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── Run audit ─────────────────────────────────────────────────────────────
     if run_zap_audit:
         if not zap_account_id:
             st.error("❌ ZAPIER_ACCOUNT_ID not found in Streamlit secrets.")
@@ -1213,7 +1303,6 @@ with tab2:
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
 
-    # ── Results ───────────────────────────────────────────────────────────────
     if "zap_summaries" in st.session_state and st.session_state["zap_summaries"]:
         summaries  = st.session_state["zap_summaries"]
         flags      = st.session_state["zap_flags"]
@@ -1226,7 +1315,6 @@ with tab2:
         n_warnings    = sum(1 for f in flags if "Warning"  in f["Severity"])
         overall_rate  = round(total_success / total_runs * 100, 1) if total_runs else 0
 
-        # Metrics
         crit_cls = "red" if n_critical > 0 else "green"
         warn_cls = "red" if n_warnings > 0 else "green"
         rate_cls = "green" if overall_rate >= 90 else "red"
@@ -1261,7 +1349,6 @@ with tab2:
         </div>
         """, unsafe_allow_html=True)
 
-        # Status breakdown chart
         status_cols = ["Success", "Errors", "Halted", "Filtered", "Throttled", "Other"]
         status_totals = {s: sum(z[s] for z in summaries) for s in status_cols}
         chart_df = pd.DataFrame([
@@ -1271,7 +1358,6 @@ with tab2:
             st.markdown("**Run Status Breakdown**")
             st.bar_chart(chart_df.set_index("Status"), color="#1a2b4a")
 
-        # Flags table
         st.markdown("---")
         if flags:
             st.markdown(f"**🚩 {len(flags)} Flag(s) Detected — sorted by severity**")
@@ -1283,7 +1369,6 @@ with tab2:
         else:
             st.success("✅ No flags detected — all zaps are running cleanly!")
 
-        # Per-zap breakdown
         st.markdown("---")
         st.markdown("**Zap-by-Zap Breakdown**")
         display_cols = ["Zap Title", "Total Runs", "Success", "Errors",
@@ -1295,7 +1380,6 @@ with tab2:
         )
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-        # Excel export
         zap_export_df = summary_df.copy()
         zap_excel = build_excel({"Zapier Run Summary": zap_export_df})
         if flags:
@@ -1311,130 +1395,26 @@ with tab2:
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-# ════════════════════════════════════════════════════════════════════════════
-# TAB 3 — TASK TRACKER
-# ════════════════════════════════════════════════════════════════════════════
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE — TASK TRACKER
+# ═════════════════════════════════════════════════════════════════════════════
+elif page == "✅  Tasks":
+    _tasks   = load_tasks()
+    _today   = date.today().isoformat()
+    _active  = [t for t in _tasks if t.get("status") != "done"]
+    _done_td = [t for t in _tasks if t.get("status") == "done" and t.get("completed_at","")[:10] == _today]
+    _overdue = [t for t in _tasks if _is_overdue(t)]
+    _p1_open = [t for t in _tasks if t.get("priority") == "P1" and t.get("status") != "done"]
 
-def _priority_pill(p):
-    icons = {"P1": "🔴", "P2": "🟠", "P3": "⚪"}
-    cls   = {"P1": "pill-p1", "P2": "pill-p2", "P3": "pill-p3"}
-    return f'<span class="{cls.get(p,"pill-p3")}">{icons.get(p,"")} {p}</span>'
-
-def _is_overdue(task):
-    if task.get("status") == "done" or task.get("type") != "one-off":
-        return False
-    due = task.get("due_date")
-    if not due:
-        return False
-    try:
-        return date.fromisoformat(str(due)) < date.today()
-    except ValueError:
-        return False
-
-def _render_task_row(task):
-    tid     = task["id"]
-    is_done = task.get("status") == "done"
-    col_chk, col_info, col_type, col_due, col_edit, col_del = st.columns([0.04, 0.52, 0.1, 0.18, 0.08, 0.08])
-
-    with col_chk:
-        checked = st.checkbox("", value=is_done, key=f"chk_{tid}", label_visibility="collapsed")
-        if checked != is_done:
-            update_task(tid, {"status": "done" if checked else "todo"})
-            st.session_state.editing_task_id = st.session_state.deleting_task_id = None
-            st.rerun()
-
-    with col_info:
-        title_cls = "task-title-done" if is_done else "task-title"
-        desc_html = f'<div class="task-desc">{task["description"]}</div>' if task.get("description") else ""
-        st.markdown(f'<div class="{title_cls}">{_priority_pill(task.get("priority","P3"))} {task["title"]}</div>{desc_html}', unsafe_allow_html=True)
-
-    with col_type:
-        st.markdown(f'<div style="margin-top:6px;"><span class="type-badge">{task.get("type","one-off")}</span></div>', unsafe_allow_html=True)
-
-    with col_due:
-        due = task.get("due_date")
-        if due:
-            cls = "overdue" if _is_overdue(task) else ""
-            flag = " ⚠️" if _is_overdue(task) else ""
-            st.markdown(f'<div style="margin-top:8px;"><span class="{cls}" style="font-size:12px;">📅 {due}{flag}</span></div>', unsafe_allow_html=True)
-
-    with col_edit:
-        editing_this = st.session_state.editing_task_id == tid
-        if st.button("✖️" if editing_this else "✏️", key=f"edit_btn_{tid}", help="Edit"):
-            st.session_state.editing_task_id  = None if editing_this else tid
-            st.session_state.deleting_task_id = None
-            st.rerun()
-
-    with col_del:
-        deleting_this = st.session_state.deleting_task_id == tid
-        if st.button("✖️" if deleting_this else "🗑️", key=f"del_btn_{tid}", help="Delete"):
-            st.session_state.deleting_task_id = None if deleting_this else tid
-            st.session_state.editing_task_id  = None
-            st.rerun()
-
-    if st.session_state.editing_task_id == tid:
-        with st.form(key=f"edit_form_{tid}"):
-            st.markdown("**Edit Task**")
-            e_title = st.text_input("Title", value=task.get("title", ""))
-            e_desc  = st.text_area("Description", value=task.get("description", ""), height=70)
-            _types  = ["daily", "weekly", "monthly", "one-off"]
-            e_type  = st.selectbox("Type", _types, index=_types.index(task.get("type", "one-off")))
-            _pris   = ["P1", "P2", "P3"]
-            e_pri   = st.selectbox("Priority", _pris, index=_pris.index(task.get("priority", "P2")))
-            raw_due = task.get("due_date")
-            e_due   = st.date_input("Due Date", value=date.fromisoformat(raw_due) if raw_due else None)
-            s_col, c_col = st.columns(2)
-            with s_col: save_btn   = st.form_submit_button("💾 Save",  use_container_width=True)
-            with c_col: cancel_btn = st.form_submit_button("Cancel", use_container_width=True)
-        if save_btn:
-            update_task(tid, {"title": e_title.strip(), "description": e_desc.strip(),
-                              "type": e_type, "priority": e_pri,
-                              "due_date": str(e_due) if e_due else None})
-            st.session_state.editing_task_id = None
-            st.rerun()
-        if cancel_btn:
-            st.session_state.editing_task_id = None
-            st.rerun()
-
-    if st.session_state.deleting_task_id == tid:
-        st.warning(f'Delete **"{task["title"]}"**? This cannot be undone.')
-        dc, ac = st.columns(2)
-        with dc:
-            if st.button("🗑️ Confirm", key=f"confirm_del_{tid}", use_container_width=True):
-                delete_task(tid)
-                st.session_state.deleting_task_id = None
-                st.rerun()
-        with ac:
-            if st.button("Cancel", key=f"abort_del_{tid}", use_container_width=True):
-                st.session_state.deleting_task_id = None
-                st.rerun()
-
-    st.markdown("<hr style='margin:4px 0; border-color:#f0f2f7;'>", unsafe_allow_html=True)
-
-
-def _render_task_tab(filter_type, all_tasks):
-    filtered = all_tasks if filter_type == "all" else [t for t in all_tasks if t.get("type") == filter_type]
-    if not filtered:
-        st.markdown("<div style='padding:32px 0; text-align:center; color:#9aa5b4; font-size:14px;'>No tasks yet — add one using the sidebar form.</div>", unsafe_allow_html=True)
-        return
-    pri_ord    = {"P1": 0, "P2": 1, "P3": 2}
-    status_ord = {"todo": 0, "in-progress": 1, "done": 2}
-    filtered   = sorted(filtered, key=lambda t: (status_ord.get(t.get("status","todo"), 0), pri_ord.get(t.get("priority","P3"), 2)))
-    n_done     = sum(1 for t in filtered if t.get("status") == "done")
-    n_overdue  = sum(1 for t in filtered if _is_overdue(t))
-    ov_badge   = f' &nbsp;<span style="color:#e05252;font-weight:600;">⚠️ {n_overdue} overdue</span>' if n_overdue else ""
-    st.markdown(f'<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #e4e7ef;"><strong style="color:#1a2b4a;">{len(filtered)}</strong> tasks &nbsp;·&nbsp; <span style="color:#1a9e5c;font-weight:600;">✅ {n_done} done</span>{ov_badge}</div>', unsafe_allow_html=True)
-    for t in filtered:
-        _render_task_row(t)
-
-
-with tab3:
-    _tasks    = load_tasks()
-    _today    = date.today().isoformat()
-    _active   = [t for t in _tasks if t.get("status") != "done"]
-    _done_td  = [t for t in _tasks if t.get("status") == "done" and t.get("completed_at","")[:10] == _today]
-    _overdue  = [t for t in _tasks if _is_overdue(t)]
-    _p1_open  = [t for t in _tasks if t.get("priority") == "P1" and t.get("status") != "done"]
+    st.markdown("""
+    <div class="section-head" style="margin-bottom:20px;">
+        <div class="section-icon">✅</div>
+        <div class="section-head-text">
+            <h3>Task Tracker</h3>
+            <p>Daily, weekly, monthly, and one-off tasks — use the sidebar to add tasks</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
     mc1, mc2, mc3, mc4 = st.columns(4)
     mc1.metric("Total Active", len(_active),  help="All non-done tasks")
@@ -1442,35 +1422,27 @@ with tab3:
     mc3.metric("Overdue",      len(_overdue), help="One-off tasks past due date")
     mc4.metric("P1 Items",     len(_p1_open), help="High-priority open tasks")
 
-    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    _qv = st.text_input("⚡ Quick add a task…", placeholder="Type and press Enter", key="quick_capture", label_visibility="collapsed")
+    _qv = st.text_input("⚡ Quick add a task…", placeholder="Type title and press Enter to add", key="quick_capture", label_visibility="collapsed")
     if _qv and _qv != st.session_state.get("_last_quick", ""):
         st.session_state["_last_quick"] = _qv
         add_task({"title": _qv.strip(), "type": "one-off", "priority": "P2"})
         st.rerun()
 
-    tb_all, tb_daily, tb_weekly, tb_monthly, tb_oneoff = st.tabs(["All", "Daily", "Weekly", "Monthly", "One-Off"])
-    with tb_all:
-        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-        _render_task_tab("all", _tasks)
-        st.markdown("</div>", unsafe_allow_html=True)
-    with tb_daily:
-        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-        _render_task_tab("daily", _tasks)
-        st.markdown("</div>", unsafe_allow_html=True)
-    with tb_weekly:
-        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-        _render_task_tab("weekly", _tasks)
-        st.markdown("</div>", unsafe_allow_html=True)
-    with tb_monthly:
-        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-        _render_task_tab("monthly", _tasks)
-        st.markdown("</div>", unsafe_allow_html=True)
-    with tb_oneoff:
-        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-        _render_task_tab("one-off", _tasks)
-        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    _filter_map = {"All": "all", "Daily": "daily", "Weekly": "weekly", "Monthly": "monthly", "One-Off": "one-off"}
+    _filter_label = st.selectbox(
+        "Filter by type",
+        list(_filter_map.keys()),
+        key="task_filter",
+        label_visibility="collapsed",
+    )
+
+    st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+    _render_task_tab(_filter_map[_filter_label], _tasks)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
