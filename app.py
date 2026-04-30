@@ -722,68 +722,36 @@ hr { border-color: #e4e7ef !important; margin: 24px 0 !important; }
 .task-desc { font-size:12px; color:#6b7a94; margin-top:2px; }
 .overdue { color:#e05252 !important; font-weight:600 !important; }
 
-/* ── Task Tracker — Input & Tab fixes ── */
-section[data-testid="stMain"] .stTextInput input,
-section[data-testid="stMain"] [data-testid="stTextInput"] input {
+/* ── Task Tracker — broad input/tab fixes ── */
+/* Force all inputs in main area to light theme */
+section[data-testid="stMain"] input,
+section[data-testid="stMain"] textarea {
+    background-color: #ffffff !important;
     color: #1a2b4a !important;
-    background: #ffffff !important;
     border: 1px solid #c8cdd8 !important;
     border-radius: 8px !important;
 }
-section[data-testid="stMain"] .stTextArea textarea {
-    color: #1a2b4a !important;
-    background: #ffffff !important;
+section[data-testid="stMain"] input::placeholder,
+section[data-testid="stMain"] textarea::placeholder {
+    color: #9aa5b4 !important;
+}
+/* Select/dropdown backgrounds */
+section[data-testid="stMain"] [data-baseweb="select"] > div:first-child {
+    background-color: #ffffff !important;
     border: 1px solid #c8cdd8 !important;
 }
-section[data-testid="stMain"] .stSelectbox div[data-baseweb="select"] > div,
-section[data-testid="stMain"] .stDateInput input {
+section[data-testid="stMain"] [data-baseweb="select"] span,
+section[data-testid="stMain"] [data-baseweb="select"] div {
     color: #1a2b4a !important;
-    background: #ffffff !important;
-    border: 1px solid #c8cdd8 !important;
 }
-section[data-testid="stMain"] .stTextInput label,
-section[data-testid="stMain"] .stTextArea label,
-section[data-testid="stMain"] .stSelectbox label,
-section[data-testid="stMain"] .stDateInput label {
-    color: #1a2b4a !important;
-    font-weight: 500 !important;
-    font-size: 13px !important;
-}
-/* Nested tab buttons (task board sub-tabs) */
-section[data-testid="stMain"] .stTabs [data-baseweb="tab-list"] {
-    background: transparent !important;
-    gap: 4px;
-}
-section[data-testid="stMain"] .stTabs [data-baseweb="tab"] {
-    background: #f0f2f7 !important;
+/* Tab buttons — both outer and inner tabs */
+button[role="tab"] {
     color: #4a5568 !important;
-    border-radius: 8px 8px 0 0 !important;
-    font-size: 13px !important;
     font-weight: 500 !important;
-    padding: 8px 16px !important;
 }
-section[data-testid="stMain"] .stTabs [aria-selected="true"] {
-    background: #1a2b4a !important;
-    color: #ffffff !important;
-    font-weight: 600 !important;
-}
-section[data-testid="stMain"] .stTabs [data-baseweb="tab"]:hover {
-    background: #e4e7ef !important;
+button[role="tab"][aria-selected="true"] {
     color: #1a2b4a !important;
-}
-section[data-testid="stMain"] .stTabs [aria-selected="true"]:hover {
-    background: #243860 !important;
-    color: #ffffff !important;
-}
-/* Metric values */
-section[data-testid="stMain"] [data-testid="stMetricValue"] {
-    color: #1a2b4a !important;
-    font-size: 32px !important;
     font-weight: 700 !important;
-}
-section[data-testid="stMain"] [data-testid="stMetricLabel"] {
-    color: #4a5568 !important;
-    font-size: 12px !important;
 }
 </style>
 """, unsafe_allow_html=True)
