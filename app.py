@@ -721,6 +721,70 @@ hr { border-color: #e4e7ef !important; margin: 24px 0 !important; }
 .task-title-done { font-size:14px; font-weight:500; color:#9aa5b4; text-decoration:line-through; }
 .task-desc { font-size:12px; color:#6b7a94; margin-top:2px; }
 .overdue { color:#e05252 !important; font-weight:600 !important; }
+
+/* ── Task Tracker — Input & Tab fixes ── */
+section[data-testid="stMain"] .stTextInput input,
+section[data-testid="stMain"] [data-testid="stTextInput"] input {
+    color: #1a2b4a !important;
+    background: #ffffff !important;
+    border: 1px solid #c8cdd8 !important;
+    border-radius: 8px !important;
+}
+section[data-testid="stMain"] .stTextArea textarea {
+    color: #1a2b4a !important;
+    background: #ffffff !important;
+    border: 1px solid #c8cdd8 !important;
+}
+section[data-testid="stMain"] .stSelectbox div[data-baseweb="select"] > div,
+section[data-testid="stMain"] .stDateInput input {
+    color: #1a2b4a !important;
+    background: #ffffff !important;
+    border: 1px solid #c8cdd8 !important;
+}
+section[data-testid="stMain"] .stTextInput label,
+section[data-testid="stMain"] .stTextArea label,
+section[data-testid="stMain"] .stSelectbox label,
+section[data-testid="stMain"] .stDateInput label {
+    color: #1a2b4a !important;
+    font-weight: 500 !important;
+    font-size: 13px !important;
+}
+/* Nested tab buttons (task board sub-tabs) */
+section[data-testid="stMain"] .stTabs [data-baseweb="tab-list"] {
+    background: transparent !important;
+    gap: 4px;
+}
+section[data-testid="stMain"] .stTabs [data-baseweb="tab"] {
+    background: #f0f2f7 !important;
+    color: #4a5568 !important;
+    border-radius: 8px 8px 0 0 !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    padding: 8px 16px !important;
+}
+section[data-testid="stMain"] .stTabs [aria-selected="true"] {
+    background: #1a2b4a !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+}
+section[data-testid="stMain"] .stTabs [data-baseweb="tab"]:hover {
+    background: #e4e7ef !important;
+    color: #1a2b4a !important;
+}
+section[data-testid="stMain"] .stTabs [aria-selected="true"]:hover {
+    background: #243860 !important;
+    color: #ffffff !important;
+}
+/* Metric values */
+section[data-testid="stMain"] [data-testid="stMetricValue"] {
+    color: #1a2b4a !important;
+    font-size: 32px !important;
+    font-weight: 700 !important;
+}
+section[data-testid="stMain"] [data-testid="stMetricLabel"] {
+    color: #4a5568 !important;
+    font-size: 12px !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
