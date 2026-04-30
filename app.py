@@ -671,21 +671,26 @@ section[data-testid="stSidebar"] hr {
 }
 
 /* ── Sidebar inputs — light background, dark text ── */
-/* The sidebar forces all text white, but input widgets have white backgrounds,
-   so we must revert input text to dark inside the sidebar. */
-section[data-testid="stSidebar"] input,
-section[data-testid="stSidebar"] textarea {
+/* Use component-class selectors (higher specificity than the broad * rule) */
+section[data-testid="stSidebar"] .stTextInput *,
+section[data-testid="stSidebar"] .stTextInput input {
     color: #1a2b4a !important;
     background: #ffffff !important;
-    border: 1px solid rgba(255,255,255,0.25) !important;
 }
-section[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child {
-    background: #ffffff !important;
-    border: 1px solid rgba(255,255,255,0.25) !important;
-}
-section[data-testid="stSidebar"] [data-baseweb="select"] span,
-section[data-testid="stSidebar"] [data-baseweb="select"] div {
+section[data-testid="stSidebar"] .stTextArea *,
+section[data-testid="stSidebar"] .stTextArea textarea {
     color: #1a2b4a !important;
+    background: #ffffff !important;
+}
+section[data-testid="stSidebar"] .stSelectbox *,
+section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div {
+    color: #1a2b4a !important;
+    background: #ffffff !important;
+}
+section[data-testid="stSidebar"] .stDateInput *,
+section[data-testid="stSidebar"] .stDateInput input {
+    color: #1a2b4a !important;
+    background: #ffffff !important;
 }
 
 /* ── Main content inputs ── */
