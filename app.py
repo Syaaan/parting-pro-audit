@@ -654,7 +654,8 @@ section[data-testid="stSidebar"] {
 section[data-testid="stSidebar"] * {
     color: rgba(255,255,255,0.85) !important;
 }
-section[data-testid="stSidebar"] .stButton > button {
+section[data-testid="stSidebar"] .stButton > button,
+section[data-testid="stSidebar"] .stFormSubmitButton > button {
     background: rgba(255,255,255,0.1) !important;
     color: white !important;
     border: 1px solid rgba(255,255,255,0.2) !important;
@@ -663,7 +664,8 @@ section[data-testid="stSidebar"] .stButton > button {
     transition: background 0.2s !important;
     width: 100%;
 }
-section[data-testid="stSidebar"] .stButton > button:hover {
+section[data-testid="stSidebar"] .stButton > button:hover,
+section[data-testid="stSidebar"] .stFormSubmitButton > button:hover {
     background: rgba(255,255,255,0.2) !important;
 }
 section[data-testid="stSidebar"] hr {
