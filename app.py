@@ -670,6 +670,45 @@ section[data-testid="stSidebar"] hr {
     border-color: rgba(255,255,255,0.1) !important;
 }
 
+/* ── Sidebar inputs — light background, dark text ── */
+/* The sidebar forces all text white, but input widgets have white backgrounds,
+   so we must revert input text to dark inside the sidebar. */
+section[data-testid="stSidebar"] input,
+section[data-testid="stSidebar"] textarea {
+    color: #1a2b4a !important;
+    background: #ffffff !important;
+    border: 1px solid rgba(255,255,255,0.25) !important;
+}
+section[data-testid="stSidebar"] [data-baseweb="select"] > div:first-child {
+    background: #ffffff !important;
+    border: 1px solid rgba(255,255,255,0.25) !important;
+}
+section[data-testid="stSidebar"] [data-baseweb="select"] span,
+section[data-testid="stSidebar"] [data-baseweb="select"] div {
+    color: #1a2b4a !important;
+}
+
+/* ── Main content inputs ── */
+section[data-testid="stMain"] input,
+section[data-testid="stMain"] textarea {
+    background: #ffffff !important;
+    color: #1a2b4a !important;
+    border: 1px solid #c8cdd8 !important;
+    border-radius: 8px !important;
+}
+section[data-testid="stMain"] input::placeholder,
+section[data-testid="stMain"] textarea::placeholder {
+    color: #9aa5b4 !important;
+}
+section[data-testid="stMain"] [data-baseweb="select"] > div:first-child {
+    background: #ffffff !important;
+    border: 1px solid #c8cdd8 !important;
+}
+section[data-testid="stMain"] [data-baseweb="select"] span,
+section[data-testid="stMain"] [data-baseweb="select"] div {
+    color: #1a2b4a !important;
+}
+
 /* ── Sidebar radio nav ── */
 section[data-testid="stSidebar"] .stRadio > div {
     gap: 4px !important;
