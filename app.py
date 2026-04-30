@@ -643,7 +643,9 @@ section[data-testid="stMain"] .vega-embed .mark-text text {
     fill: #1a2b4a !important;
 }
 
-.hero, .hero * { color: inherit; }
+.hero-title    { color: #ffffff !important; }
+.hero-subtitle { color: rgba(255,255,255,0.65) !important; }
+.hero-badge    { color: rgba(255,255,255,0.85) !important; }
 
 /* ── Sidebar ── */
 section[data-testid="stSidebar"] {
