@@ -14,6 +14,7 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from task_store import (
     load_tasks, add_task, update_task, delete_task, reset_recurring_tasks
 )
+import inbox_scanner
 
 # ── Helpers: secrets ──────────────────────────────────────────────────────────
 def _secret(key, default=""):
@@ -921,7 +922,7 @@ with st.sidebar:
     st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:10px;'>Menu</div>", unsafe_allow_html=True)
     page = st.radio(
         "Navigate",
-        options=["📋  Airtable Audit", "⚡  Zapier Audit", "✅  Tasks", "📊  History"],
+        options=["📋  Airtable Audit", "⚡  Zapier Audit", "✅  Tasks", "📊  History", "🤖  Smart Inbox"],
         label_visibility="collapsed",
         key="nav_page",
     )
@@ -936,6 +937,17 @@ with st.sidebar:
         st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:8px;'>Connected Bases</div>", unsafe_allow_html=True)
         for b in BASE_IDS:
             st.markdown(f"<div style='font-size:12px; opacity:0.7; padding: 4px 0;'>• {b}</div>", unsafe_allow_html=True)
+        st.markdown("---")
+
+    elif page == "🤖  Smart Inbox":
+        st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Auto-Scan</div>", unsafe_allow_html=True)
+        st.selectbox(
+            "Scan every",
+            options=[5, 10, 15, 30],
+            index=1,
+            format_func=lambda x: f"{x} minutes",
+            key="inbox_refresh_interval",
+        )
         st.markdown("---")
 
     elif page == "✅  Tasks":
@@ -1603,6 +1615,14 @@ elif page == "📊  History":
         When a recurring task is reset, it moves back to the active Tasks view as **To Do**.
         Completing it again will show it here until the next reset.
         """)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE — SMART INBOX
+# ═════════════════════════════════════════════════════════════════════════════
+elif page == "🤖  Smart Inbox":
+    inbox_scanner.render_inbox_page(
+        refresh_interval=st.session_state.get("inbox_refresh_interval", 10)
+    )
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
