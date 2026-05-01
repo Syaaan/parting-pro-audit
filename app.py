@@ -921,7 +921,7 @@ with st.sidebar:
     st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:10px;'>Menu</div>", unsafe_allow_html=True)
     page = st.radio(
         "Navigate",
-        options=["📋  Airtable Audit", "⚡  Zapier Audit", "✅  Tasks"],
+        options=["📋  Airtable Audit", "⚡  Zapier Audit", "✅  Tasks", "📊  History"],
         label_visibility="collapsed",
         key="nav_page",
     )
@@ -1491,6 +1491,118 @@ elif page == "✅  Tasks":
     st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
     _render_task_tab(_filter_map[_filter_label], _tasks)
     st.markdown("</div>", unsafe_allow_html=True)
+
+# ═════════════════════════════════════════════════════════════════════════════
+# PAGE — HISTORY
+# ═════════════════════════════════════════════════════════════════════════════
+elif page == "📊  History":
+    _tasks = load_tasks()
+    _completed = [t for t in _tasks if t.get("status") == "done"]
+
+    st.markdown("""
+    <div class="section-head" style="margin-bottom:20px;">
+        <div class="section-icon">📊</div>
+        <div class="section-head-text">
+            <h3>Completed Tasks</h3>
+            <p>All tasks marked done — recurring tasks reset automatically on their schedule</p>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Summary metrics ───────────────────────────────────────────────────────
+    _c_daily   = [t for t in _completed if t.get("type") == "daily"]
+    _c_weekly  = [t for t in _completed if t.get("type") == "weekly"]
+    _c_monthly = [t for t in _completed if t.get("type") == "monthly"]
+    _c_oneoff  = [t for t in _completed if t.get("type") == "one-off"]
+
+    hc1, hc2, hc3, hc4, hc5 = st.columns(5)
+    hc1.metric("Total Done",  len(_completed))
+    hc2.metric("Daily",       len(_c_daily))
+    hc3.metric("Weekly",      len(_c_weekly))
+    hc4.metric("Monthly",     len(_c_monthly))
+    hc5.metric("One-Off",     len(_c_oneoff))
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # ── Filter ────────────────────────────────────────────────────────────────
+    _hfilter_map = {
+        "All Types": "all",
+        "Daily": "daily",
+        "Weekly": "weekly",
+        "Monthly": "monthly",
+        "One-Off": "one-off",
+    }
+    _hfilter_label = st.selectbox(
+        "Filter by type",
+        list(_hfilter_map.keys()),
+        key="history_filter",
+        label_visibility="collapsed",
+    )
+    _hfilter = _hfilter_map[_hfilter_label]
+    _view = _completed if _hfilter == "all" else [t for t in _completed if t.get("type") == _hfilter]
+
+    st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+    # ── Task list ─────────────────────────────────────────────────────────────
+    st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+
+    if not _view:
+        st.markdown("<div style='padding:32px 0; text-align:center; color:#9aa5b4; font-size:14px;'>No completed tasks in this category yet.</div>", unsafe_allow_html=True)
+    else:
+        _pri_ord = {"P1": 0, "P2": 1, "P3": 2}
+        _view = sorted(_view, key=lambda t: (t.get("completed_at") or ""), reverse=True)
+
+        st.markdown(f'<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #e4e7ef;"><strong style="color:#1a2b4a;">{len(_view)}</strong> completed task{"s" if len(_view) != 1 else ""} — most recent first</div>', unsafe_allow_html=True)
+
+        for t in _view:
+            tid = t["id"]
+            completed_at = t.get("completed_at", "")
+            completed_label = ""
+            if completed_at:
+                try:
+                    completed_label = datetime.fromisoformat(completed_at).strftime("%-d %b %Y, %-I:%M %p")
+                except Exception:
+                    try:
+                        completed_label = datetime.fromisoformat(completed_at).strftime("%d %b %Y")
+                    except Exception:
+                        completed_label = completed_at[:10]
+
+            h_info, h_meta, h_reopen = st.columns([0.62, 0.28, 0.10])
+
+            with h_info:
+                desc_html = f'<div class="task-desc">{t["description"]}</div>' if t.get("description") else ""
+                st.markdown(
+                    f'<div class="task-title-done">{_priority_pill(t.get("priority","P3"))} {t["title"]}</div>{desc_html}',
+                    unsafe_allow_html=True
+                )
+
+            with h_meta:
+                type_badge = f'<span class="type-badge">{t.get("type","one-off")}</span>'
+                date_str = f'<span style="font-size:11px;color:#9aa5b4;margin-left:6px;">✅ {completed_label}</span>' if completed_label else ""
+                st.markdown(f'<div style="margin-top:6px;">{type_badge}{date_str}</div>', unsafe_allow_html=True)
+
+            with h_reopen:
+                if st.button("↩️", key=f"reopen_{tid}", help="Re-open task"):
+                    update_task(tid, {"status": "todo"})
+                    st.rerun()
+
+            st.markdown("<hr style='margin:4px 0; border-color:#f0f2f7;'>", unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # ── Recurrence info ───────────────────────────────────────────────────────
+    with st.expander("ℹ️ How recurring tasks work"):
+        st.markdown("""
+        | Type | Resets when |
+        |------|------------|
+        | **Daily** | Every new day |
+        | **Weekly** | Every Monday |
+        | **Monthly** | 1st of each month |
+        | **One-Off** | Never — stays done permanently |
+
+        When a recurring task is reset, it moves back to the active Tasks view as **To Do**.
+        Completing it again will show it here until the next reset.
+        """)
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
