@@ -19,7 +19,12 @@ import streamlit as st
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
-from streamlit_autorefresh import st_autorefresh
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    # Fallback: no-op if package not installed
+    def st_autorefresh(interval=60000, limit=None, key=None):
+        return 0
 from task_store import add_task
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
