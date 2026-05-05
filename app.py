@@ -754,6 +754,29 @@ div[data-testid="stDownloadButton"] > button:hover {
     background: #243860 !important;
 }
 
+/* ── Sidebar toggle button ── */
+[data-testid="collapsedControl"] {
+    background: #1a2b4a !important;
+    border-radius: 0 10px 10px 0 !important;
+    width: 28px !important;
+    height: 52px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-shadow: 3px 0 10px rgba(26,43,74,0.25) !important;
+    top: 50% !important;
+    transform: translateY(-50%) !important;
+    position: fixed !important;
+    left: 0 !important;
+    border: none !important;
+}
+[data-testid="collapsedControl"] svg {
+    fill: white !important;
+    color: white !important;
+    width: 16px !important;
+    height: 16px !important;
+}
+
 /* ── Dataframe ── */
 .stDataFrame { border-radius: 10px; overflow: hidden; }
 
