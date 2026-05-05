@@ -656,6 +656,58 @@ section[data-testid="stSidebar"] {
 section[data-testid="stSidebar"] * {
     color: rgba(255,255,255,0.85) !important;
 }
+
+/* ── Sidebar collapse button (< arrow at right edge when sidebar is open) ── */
+[data-testid="stSidebarCollapseButton"] {
+    opacity: 1 !important;
+    visibility: visible !important;
+    background: #1a2b4a !important;
+    border-radius: 0 12px 12px 0 !important;
+    min-height: 68px !important;
+    min-width: 36px !important;
+    width: 36px !important;
+    box-shadow: 4px 0 20px rgba(26,43,74,0.6) !important;
+    border: none !important;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+[data-testid="stSidebarCollapseButton"] svg,
+[data-testid="stSidebarCollapseButton"] svg *,
+[data-testid="stSidebarCollapseButton"] path,
+[data-testid="stSidebarCollapseButton"] polyline,
+[data-testid="stSidebarCollapseButton"] line {
+    fill: white !important;
+    stroke: white !important;
+    color: white !important;
+}
+
+/* ── Expand button (> shown when sidebar is collapsed) ── */
+[data-testid="collapsedControl"] {
+    opacity: 1 !important;
+    visibility: visible !important;
+    background: #1a2b4a !important;
+    border-radius: 0 12px 12px 0 !important;
+    min-height: 68px !important;
+    min-width: 36px !important;
+    width: 36px !important;
+    box-shadow: 4px 0 20px rgba(26,43,74,0.6) !important;
+    border: none !important;
+    cursor: pointer !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+[data-testid="collapsedControl"] svg,
+[data-testid="collapsedControl"] svg *,
+[data-testid="collapsedControl"] path,
+[data-testid="collapsedControl"] polyline,
+[data-testid="collapsedControl"] line {
+    fill: white !important;
+    stroke: white !important;
+    color: white !important;
+}
 section[data-testid="stSidebar"] .stButton > button,
 section[data-testid="stSidebar"] .stFormSubmitButton > button {
     background: rgba(255,255,255,0.1) !important;
@@ -911,41 +963,54 @@ st.markdown("""
 components.html("""
 <script>
 (function() {
+  var PILL = [
+    'background:#1a2b4a!important',
+    'border-radius:0 12px 12px 0!important',
+    'min-height:68px!important',
+    'min-width:36px!important',
+    'width:36px!important',
+    'box-shadow:4px 0 20px rgba(26,43,74,0.6)!important',
+    'border:none!important',
+    'cursor:pointer!important',
+    'opacity:1!important',
+    'visibility:visible!important',
+    'display:flex!important',
+    'align-items:center!important',
+    'justify-content:center!important'
+  ].join(';');
+
+  function whiteIcons(el) {
+    el.querySelectorAll('svg,path,polyline,line,circle,rect').forEach(function(n) {
+      n.style.fill = 'white';
+      n.style.stroke = 'white';
+      n.setAttribute('fill', 'white');
+      n.setAttribute('stroke', 'white');
+    });
+  }
+
   function applyStyle() {
     var p = window.parent.document;
-    // Style the expand button (visible when sidebar is collapsed)
-    var btn = p.querySelector('[data-testid="collapsedControl"]');
-    if (btn && !btn.dataset.ppStyled) {
-      btn.dataset.ppStyled = '1';
-      btn.style.cssText += [
-        'background:#1a2b4a!important',
-        'border-radius:0 12px 12px 0!important',
-        'min-height:68px!important',
-        'min-width:36px!important',
-        'width:36px!important',
-        'box-shadow:4px 0 20px rgba(26,43,74,0.6)!important',
-        'border:none!important',
-        'cursor:pointer!important',
-        'opacity:1!important',
-        'visibility:visible!important',
-        'display:flex!important',
-        'align-items:center!important',
-        'justify-content:center!important'
-      ].join(';');
-      btn.querySelectorAll('svg, path, polyline, line').forEach(function(el) {
-        el.style.fill = 'white';
-        el.style.stroke = 'white';
-        el.setAttribute('fill', 'white');
-        el.setAttribute('stroke', 'white');
-      });
+
+    // 1. EXPAND button — shown when sidebar is COLLAPSED
+    var exp = p.querySelector('[data-testid="collapsedControl"]');
+    if (exp) {
+      exp.style.cssText += ';' + PILL;
+      whiteIcons(exp);
+    }
+
+    // 2. COLLAPSE button — shown at right edge of sidebar when OPEN
+    //    Streamlit uses "stSidebarCollapseButton" in newer versions
+    var col = p.querySelector('[data-testid="stSidebarCollapseButton"]');
+    if (col) {
+      col.style.cssText += ';' + PILL;
+      whiteIcons(col);
     }
   }
-  // Run immediately then keep watching (sidebar toggle changes DOM)
+
   applyStyle();
-  setInterval(applyStyle, 500);
-  // Also watch for DOM mutations
+  setInterval(applyStyle, 300);
   new MutationObserver(applyStyle).observe(
-    window.parent.document.body, {childList:true, subtree:true}
+    window.parent.document.body, {childList:true, subtree:true, attributes:true}
   );
 })();
 </script>
