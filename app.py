@@ -754,29 +754,6 @@ div[data-testid="stDownloadButton"] > button:hover {
     background: #243860 !important;
 }
 
-/* ── Sidebar toggle button ── */
-[data-testid="collapsedControl"] {
-    background: #1a2b4a !important;
-    border-radius: 0 10px 10px 0 !important;
-    width: 28px !important;
-    height: 52px !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    box-shadow: 3px 0 10px rgba(26,43,74,0.25) !important;
-    top: 50% !important;
-    transform: translateY(-50%) !important;
-    position: fixed !important;
-    left: 0 !important;
-    border: none !important;
-}
-[data-testid="collapsedControl"] svg {
-    fill: white !important;
-    color: white !important;
-    width: 16px !important;
-    height: 16px !important;
-}
-
 /* ── Dataframe ── */
 .stDataFrame { border-radius: 10px; overflow: hidden; }
 
@@ -927,6 +904,43 @@ st.markdown("""
     </div>
     <div class="hero-badge">🔒 Internal Tool &nbsp;·&nbsp; Parting Pro</div>
 </div>
+""", unsafe_allow_html=True)
+
+# ── Sidebar toggle button (always visible, fixed position) ───────────────────
+st.markdown("""
+<button id="pp-sidebar-btn" title="Toggle sidebar" onclick="
+  (function(){
+    var cc = document.querySelector('[data-testid=collapsedControl]');
+    if(cc){ cc.click(); return; }
+    var btns = document.querySelectorAll('section[data-testid=stSidebar] button');
+    for(var i=0;i<btns.length;i++){
+      var r=btns[i].getBoundingClientRect();
+      if(r.width>0&&r.height>0){ btns[i].click(); return; }
+    }
+  })();
+">☰</button>
+<style>
+#pp-sidebar-btn {
+    position: fixed;
+    top: 14px;
+    left: 14px;
+    z-index: 9999999;
+    background: #1a2b4a;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    width: 38px;
+    height: 38px;
+    font-size: 17px;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(26,43,74,0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: background 0.2s;
+}
+#pp-sidebar-btn:hover { background: #243860; }
+</style>
 """, unsafe_allow_html=True)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
