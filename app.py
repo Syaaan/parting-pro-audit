@@ -979,38 +979,27 @@ components.html("""
     'justify-content:center!important'
   ].join(';');
 
-  function whiteIcons(el) {
-    el.querySelectorAll('svg,path,polyline,line,circle,rect').forEach(function(n) {
+  function styleBtn(btn) {
+    if (!btn || btn.dataset.ppDone) return;
+    btn.dataset.ppDone = '1';
+    btn.style.cssText += ';' + PILL;
+    btn.querySelectorAll('svg,path,polyline,line,circle,rect').forEach(function(n) {
       n.style.fill = 'white';
       n.style.stroke = 'white';
-      n.setAttribute('fill', 'white');
-      n.setAttribute('stroke', 'white');
     });
   }
 
   function applyStyle() {
     var p = window.parent.document;
-
-    // 1. EXPAND button — shown when sidebar is COLLAPSED
-    var exp = p.querySelector('[data-testid="collapsedControl"]');
-    if (exp) {
-      exp.style.cssText += ';' + PILL;
-      whiteIcons(exp);
-    }
-
-    // 2. COLLAPSE button — shown at right edge of sidebar when OPEN
-    //    Streamlit uses "stSidebarCollapseButton" in newer versions
-    var col = p.querySelector('[data-testid="stSidebarCollapseButton"]');
-    if (col) {
-      col.style.cssText += ';' + PILL;
-      whiteIcons(col);
-    }
+    styleBtn(p.querySelector('[data-testid="collapsedControl"]'));
+    styleBtn(p.querySelector('[data-testid="stSidebarCollapseButton"]'));
   }
 
   applyStyle();
-  setInterval(applyStyle, 300);
+  setInterval(applyStyle, 800);
+  // childList only — no attributes, to avoid mutation loop
   new MutationObserver(applyStyle).observe(
-    window.parent.document.body, {childList:true, subtree:true, attributes:true}
+    window.parent.document.body, {childList:true, subtree:true}
   );
 })();
 </script>
