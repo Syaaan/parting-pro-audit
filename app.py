@@ -892,10 +892,53 @@ def _render_task_tab(filter_type, all_tasks):
 for _k in ("editing_task_id", "deleting_task_id"):
     if _k not in st.session_state:
         st.session_state[_k] = None
+if "sidebar_visible" not in st.session_state:
+    st.session_state["sidebar_visible"] = True
 reset_recurring_tasks()
 
-# ── Hero ──────────────────────────────────────────────────────────────────────
+# ── Hide sidebar via CSS when toggled off ─────────────────────────────────────
+if not st.session_state["sidebar_visible"]:
+    st.markdown("""
+    <style>
+    section[data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"]  { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# ── Menu toggle button (top of page, always visible) ─────────────────────────
 st.markdown("""
+<style>
+/* Shrink the toggle button column to just the button width */
+div[data-testid="stHorizontalBlock"]:first-of-type > div:first-child {
+    flex: 0 0 52px !important;
+    min-width: 52px !important;
+}
+div[data-testid="stHorizontalBlock"]:first-of-type > div:first-child button {
+    background: #1a2b4a !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 8px !important;
+    font-size: 18px !important;
+    height: 40px !important;
+    width: 40px !important;
+    padding: 0 !important;
+}
+div[data-testid="stHorizontalBlock"]:first-of-type > div:first-child button:hover {
+    background: #243860 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+_toggle_col, _hero_col = st.columns([0.04, 0.96])
+with _toggle_col:
+    _label = "☰" if not st.session_state["sidebar_visible"] else "✕"
+    if st.button(_label, key="sidebar_toggle", help="Show / hide menu"):
+        st.session_state["sidebar_visible"] = not st.session_state["sidebar_visible"]
+        st.rerun()
+
+# ── Hero ──────────────────────────────────────────────────────────────────────
+with _hero_col:
+    st.markdown("""
 <div class="hero">
     <div class="hero-left">
         <img class="hero-logo" src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo_white.png" />
@@ -904,43 +947,6 @@ st.markdown("""
     </div>
     <div class="hero-badge">🔒 Internal Tool &nbsp;·&nbsp; Parting Pro</div>
 </div>
-""", unsafe_allow_html=True)
-
-# ── Sidebar toggle button (always visible, fixed position) ───────────────────
-st.markdown("""
-<button id="pp-sidebar-btn" title="Toggle sidebar" onclick="
-  (function(){
-    var cc = document.querySelector('[data-testid=collapsedControl]');
-    if(cc){ cc.click(); return; }
-    var btns = document.querySelectorAll('section[data-testid=stSidebar] button');
-    for(var i=0;i<btns.length;i++){
-      var r=btns[i].getBoundingClientRect();
-      if(r.width>0&&r.height>0){ btns[i].click(); return; }
-    }
-  })();
-">☰</button>
-<style>
-#pp-sidebar-btn {
-    position: fixed;
-    top: 14px;
-    left: 14px;
-    z-index: 9999999;
-    background: #1a2b4a;
-    color: white;
-    border: none;
-    border-radius: 8px;
-    width: 38px;
-    height: 38px;
-    font-size: 17px;
-    cursor: pointer;
-    box-shadow: 0 2px 10px rgba(26,43,74,0.35);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.2s;
-}
-#pp-sidebar-btn:hover { background: #243860; }
-</style>
 """, unsafe_allow_html=True)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
