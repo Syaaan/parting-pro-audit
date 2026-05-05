@@ -422,7 +422,17 @@ html, body, [class*="css"] {
     font-family: 'Inter', sans-serif;
 }
 
-#MainMenu, footer, header { visibility: hidden; }
+#MainMenu, footer { visibility: hidden; }
+
+/* Hide Streamlit toolbar (deploy/share/settings) but keep sidebar toggle */
+[data-testid="stToolbar"] { visibility: hidden !important; }
+[data-testid="stDecoration"] { display: none !important; }
+[data-testid="stStatusWidget"] { visibility: hidden !important; }
+header[data-testid="stHeader"] {
+    background: transparent !important;
+    border-bottom: none !important;
+    box-shadow: none !important;
+}
 
 .stApp { background: #f0f2f7; }
 
