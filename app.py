@@ -15,7 +15,6 @@ from task_store import (
     load_tasks, add_task, update_task, delete_task, reset_recurring_tasks
 )
 import inbox_scanner
-import streamlit.components.v1 as components
 
 # ── Helpers: secrets ──────────────────────────────────────────────────────────
 def _secret(key, default=""):
@@ -959,51 +958,6 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Sidebar toggle enhancer — runs in iframe, accesses parent DOM ─────────────
-components.html("""
-<script>
-(function() {
-  var PILL = [
-    'background:#1a2b4a!important',
-    'border-radius:0 12px 12px 0!important',
-    'min-height:68px!important',
-    'min-width:36px!important',
-    'width:36px!important',
-    'box-shadow:4px 0 20px rgba(26,43,74,0.6)!important',
-    'border:none!important',
-    'cursor:pointer!important',
-    'opacity:1!important',
-    'visibility:visible!important',
-    'display:flex!important',
-    'align-items:center!important',
-    'justify-content:center!important'
-  ].join(';');
-
-  function styleBtn(btn) {
-    if (!btn || btn.dataset.ppDone) return;
-    btn.dataset.ppDone = '1';
-    btn.style.cssText += ';' + PILL;
-    btn.querySelectorAll('svg,path,polyline,line,circle,rect').forEach(function(n) {
-      n.style.fill = 'white';
-      n.style.stroke = 'white';
-    });
-  }
-
-  function applyStyle() {
-    var p = window.parent.document;
-    styleBtn(p.querySelector('[data-testid="collapsedControl"]'));
-    styleBtn(p.querySelector('[data-testid="stSidebarCollapseButton"]'));
-  }
-
-  applyStyle();
-  setInterval(applyStyle, 800);
-  // childList only — no attributes, to avoid mutation loop
-  new MutationObserver(applyStyle).observe(
-    window.parent.document.body, {childList:true, subtree:true}
-  );
-})();
-</script>
-""", height=0, scrolling=False)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 run_phones   = False
