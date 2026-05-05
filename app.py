@@ -754,6 +754,31 @@ div[data-testid="stDownloadButton"] > button:hover {
     background: #243860 !important;
 }
 
+/* ── Sidebar native toggle buttons — make them very visible ── */
+/* The expand button shown on the LEFT EDGE when sidebar is collapsed */
+[data-testid="collapsedControl"] {
+    background: #1a2b4a !important;
+    border-radius: 0 12px 12px 0 !important;
+    min-height: 64px !important;
+    min-width: 32px !important;
+    box-shadow: 4px 0 16px rgba(26,43,74,0.5) !important;
+    border: none !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+[data-testid="collapsedControl"]:hover {
+    background: #243860 !important;
+}
+[data-testid="collapsedControl"] svg,
+[data-testid="collapsedControl"] svg path {
+    fill: white !important;
+    stroke: white !important;
+    color: white !important;
+}
+
 /* ── Dataframe ── */
 .stDataFrame { border-radius: 10px; overflow: hidden; }
 
@@ -892,53 +917,10 @@ def _render_task_tab(filter_type, all_tasks):
 for _k in ("editing_task_id", "deleting_task_id"):
     if _k not in st.session_state:
         st.session_state[_k] = None
-if "sidebar_visible" not in st.session_state:
-    st.session_state["sidebar_visible"] = True
 reset_recurring_tasks()
 
-# ── Hide sidebar via CSS when toggled off ─────────────────────────────────────
-if not st.session_state["sidebar_visible"]:
-    st.markdown("""
-    <style>
-    section[data-testid="stSidebar"] { display: none !important; }
-    [data-testid="collapsedControl"]  { display: none !important; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# ── Menu toggle button (top of page, always visible) ─────────────────────────
-st.markdown("""
-<style>
-/* Shrink the toggle button column to just the button width */
-div[data-testid="stHorizontalBlock"]:first-of-type > div:first-child {
-    flex: 0 0 52px !important;
-    min-width: 52px !important;
-}
-div[data-testid="stHorizontalBlock"]:first-of-type > div:first-child button {
-    background: #1a2b4a !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 8px !important;
-    font-size: 18px !important;
-    height: 40px !important;
-    width: 40px !important;
-    padding: 0 !important;
-}
-div[data-testid="stHorizontalBlock"]:first-of-type > div:first-child button:hover {
-    background: #243860 !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-_toggle_col, _hero_col = st.columns([0.04, 0.96])
-with _toggle_col:
-    _label = "☰" if not st.session_state["sidebar_visible"] else "✕"
-    if st.button(_label, key="sidebar_toggle", help="Show / hide menu"):
-        st.session_state["sidebar_visible"] = not st.session_state["sidebar_visible"]
-        st.rerun()
-
 # ── Hero ──────────────────────────────────────────────────────────────────────
-with _hero_col:
-    st.markdown("""
+st.markdown("""
 <div class="hero">
     <div class="hero-left">
         <img class="hero-logo" src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo_white.png" />
