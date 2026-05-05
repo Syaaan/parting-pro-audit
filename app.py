@@ -15,6 +15,7 @@ from task_store import (
     load_tasks, add_task, update_task, delete_task, reset_recurring_tasks
 )
 import inbox_scanner
+import streamlit.components.v1 as components
 
 # ── Helpers: secrets ──────────────────────────────────────────────────────────
 def _secret(key, default=""):
@@ -754,31 +755,6 @@ div[data-testid="stDownloadButton"] > button:hover {
     background: #243860 !important;
 }
 
-/* ── Sidebar native toggle buttons — make them very visible ── */
-/* The expand button shown on the LEFT EDGE when sidebar is collapsed */
-[data-testid="collapsedControl"] {
-    background: #1a2b4a !important;
-    border-radius: 0 12px 12px 0 !important;
-    min-height: 64px !important;
-    min-width: 32px !important;
-    box-shadow: 4px 0 16px rgba(26,43,74,0.5) !important;
-    border: none !important;
-    opacity: 1 !important;
-    visibility: visible !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-[data-testid="collapsedControl"]:hover {
-    background: #243860 !important;
-}
-[data-testid="collapsedControl"] svg,
-[data-testid="collapsedControl"] svg path {
-    fill: white !important;
-    stroke: white !important;
-    color: white !important;
-}
-
 /* ── Dataframe ── */
 .stDataFrame { border-radius: 10px; overflow: hidden; }
 
@@ -930,6 +906,50 @@ st.markdown("""
     <div class="hero-badge">🔒 Internal Tool &nbsp;·&nbsp; Parting Pro</div>
 </div>
 """, unsafe_allow_html=True)
+
+# ── Sidebar toggle enhancer — runs in iframe, accesses parent DOM ─────────────
+components.html("""
+<script>
+(function() {
+  function applyStyle() {
+    var p = window.parent.document;
+    // Style the expand button (visible when sidebar is collapsed)
+    var btn = p.querySelector('[data-testid="collapsedControl"]');
+    if (btn && !btn.dataset.ppStyled) {
+      btn.dataset.ppStyled = '1';
+      btn.style.cssText += [
+        'background:#1a2b4a!important',
+        'border-radius:0 12px 12px 0!important',
+        'min-height:68px!important',
+        'min-width:36px!important',
+        'width:36px!important',
+        'box-shadow:4px 0 20px rgba(26,43,74,0.6)!important',
+        'border:none!important',
+        'cursor:pointer!important',
+        'opacity:1!important',
+        'visibility:visible!important',
+        'display:flex!important',
+        'align-items:center!important',
+        'justify-content:center!important'
+      ].join(';');
+      btn.querySelectorAll('svg, path, polyline, line').forEach(function(el) {
+        el.style.fill = 'white';
+        el.style.stroke = 'white';
+        el.setAttribute('fill', 'white');
+        el.setAttribute('stroke', 'white');
+      });
+    }
+  }
+  // Run immediately then keep watching (sidebar toggle changes DOM)
+  applyStyle();
+  setInterval(applyStyle, 500);
+  // Also watch for DOM mutations
+  new MutationObserver(applyStyle).observe(
+    window.parent.document.body, {childList:true, subtree:true}
+  );
+})();
+</script>
+""", height=0, scrolling=False)
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 run_phones   = False
