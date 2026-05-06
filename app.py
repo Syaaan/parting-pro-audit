@@ -1024,9 +1024,12 @@ with st.sidebar:
             _sub   = st.form_submit_button("➕ Add Task", use_container_width=True)
         if _sub:
             if _title.strip():
-                add_task({"title": _title.strip(), "description": _desc.strip(),
-                          "type": _type, "priority": _pri,
-                          "due_date": str(_due) if _due else None})
+                try:
+                    add_task({"title": _title.strip(), "description": _desc.strip(),
+                              "type": _type, "priority": _pri,
+                              "due_date": str(_due) if _due else None})
+                except Exception as _e:
+                    st.error(f"❌ Could not save: {_e}")
                 st.rerun()
             else:
                 st.warning("Title required.")
@@ -1556,7 +1559,10 @@ elif page == "✅  Tasks":
     )
     if _qv and _qv != st.session_state.get("_last_quick", ""):
         st.session_state["_last_quick"] = _qv
-        add_task({"title": _qv.strip(), "type": "one-off", "priority": "P2"})
+        try:
+            add_task({"title": _qv.strip(), "type": "one-off", "priority": "P2"})
+        except Exception as _e:
+            st.error(f"❌ Could not save task: {_e}")
         st.rerun()
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)

@@ -142,15 +142,14 @@ def add_task(data: dict) -> dict:
     }
     if not _use_airtable():
         return _local_add(task_data)
-    try:
-        r = requests.post(
-            _table_url(), headers=_headers(),
-            json={"fields": _fields_from(task_data)}, timeout=15,
-        )
-        r.raise_for_status()
-        return _rec_to_task(r.json())
-    except Exception:
-        return _local_add(task_data)
+    r = requests.post(
+        _table_url(), headers=_headers(),
+        json={"fields": _fields_from(task_data)}, timeout=15,
+    )
+    if not r.ok:
+        # Raise with full Airtable error so the UI can show it
+        raise RuntimeError(f"Airtable error {r.status_code}: {r.text}")
+    return _rec_to_task(r.json())
 
 
 def update_task(task_id: str, updates: dict):
