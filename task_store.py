@@ -10,8 +10,10 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-TASKS_TABLE  = "Tasks"
-_LOCAL_FILE  = Path(__file__).parent / "tasks.json"
+# Use table ID directly so it works regardless of the table's display name
+TASKS_TABLE      = "tblaF1j6oS9s9IAUz"
+_DEFAULT_BASE_ID = "appTv7HOVgk2hBEBG"
+_LOCAL_FILE      = Path(__file__).parent / "tasks.json"
 
 # ── Secrets ───────────────────────────────────────────────────────────────────
 def _secret(key, default=""):
@@ -24,8 +26,7 @@ def _token():
     return _secret("AIRTABLE_TOKEN")
 
 def _base_id():
-    # Prefer a dedicated TASKS_BASE_ID secret; fall back to the first audit base
-    return _secret("TASKS_BASE_ID") or "appbXFzZnhij88tnQ"
+    return _secret("TASKS_BASE_ID") or _DEFAULT_BASE_ID
 
 def _headers():
     return {
@@ -115,10 +116,6 @@ def load_tasks() -> list:
             if offset:
                 params["offset"] = offset
             r = requests.get(_table_url(), headers=_headers(), params=params, timeout=15)
-            if r.status_code == 404:
-                # Table doesn't exist yet — try to create it silently
-                _create_tasks_table()
-                return []
             r.raise_for_status()
             data = r.json()
             records.extend(data.get("records", []))
@@ -150,12 +147,6 @@ def add_task(data: dict) -> dict:
             _table_url(), headers=_headers(),
             json={"fields": _fields_from(task_data)}, timeout=15,
         )
-        if r.status_code == 404:
-            if _create_tasks_table():
-                r = requests.post(
-                    _table_url(), headers=_headers(),
-                    json={"fields": _fields_from(task_data)}, timeout=15,
-                )
         r.raise_for_status()
         return _rec_to_task(r.json())
     except Exception:
