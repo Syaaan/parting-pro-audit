@@ -854,13 +854,13 @@ def _is_overdue(task):
     except ValueError:
         return False
 
-def _render_task_row(task):
+def _render_task_row(task, kp=""):
     tid     = task["id"]
     is_done = task.get("status") == "done"
     col_chk, col_info, col_type, col_due, col_edit, col_del = st.columns([0.04, 0.52, 0.1, 0.18, 0.08, 0.08])
 
     with col_chk:
-        checked = st.checkbox("", value=is_done, key=f"chk_{tid}", label_visibility="collapsed")
+        checked = st.checkbox("", value=is_done, key=f"{kp}chk_{tid}", label_visibility="collapsed")
         if checked != is_done:
             update_task(tid, {"status": "done" if checked else "todo"})
             st.session_state.editing_task_id = st.session_state.deleting_task_id = None
@@ -883,20 +883,20 @@ def _render_task_row(task):
 
     with col_edit:
         editing_this = st.session_state.editing_task_id == tid
-        if st.button("✖️" if editing_this else "✏️", key=f"edit_btn_{tid}", help="Edit"):
+        if st.button("✖️" if editing_this else "✏️", key=f"{kp}edit_btn_{tid}", help="Edit"):
             st.session_state.editing_task_id  = None if editing_this else tid
             st.session_state.deleting_task_id = None
             st.rerun()
 
     with col_del:
         deleting_this = st.session_state.deleting_task_id == tid
-        if st.button("✖️" if deleting_this else "🗑️", key=f"del_btn_{tid}", help="Delete"):
+        if st.button("✖️" if deleting_this else "🗑️", key=f"{kp}del_btn_{tid}", help="Delete"):
             st.session_state.deleting_task_id = None if deleting_this else tid
             st.session_state.editing_task_id  = None
             st.rerun()
 
     if st.session_state.editing_task_id == tid:
-        with st.form(key=f"edit_form_{tid}"):
+        with st.form(key=f"{kp}edit_form_{tid}"):
             st.markdown("**Edit Task**")
             e_title = st.text_input("Title", value=task.get("title", ""))
             e_desc  = st.text_area("Description", value=task.get("description", ""), height=70)
@@ -923,12 +923,12 @@ def _render_task_row(task):
         st.warning(f'Delete **"{task["title"]}"**? This cannot be undone.')
         dc, ac = st.columns(2)
         with dc:
-            if st.button("🗑️ Confirm", key=f"confirm_del_{tid}", use_container_width=True):
+            if st.button("🗑️ Confirm", key=f"{kp}confirm_del_{tid}", use_container_width=True):
                 delete_task(tid)
                 st.session_state.deleting_task_id = None
                 st.rerun()
         with ac:
-            if st.button("Cancel", key=f"abort_del_{tid}", use_container_width=True):
+            if st.button("Cancel", key=f"{kp}abort_del_{tid}", use_container_width=True):
                 st.session_state.deleting_task_id = None
                 st.rerun()
 
@@ -1681,7 +1681,7 @@ elif page == "✅  Tasks":
                     unsafe_allow_html=True
                 )
                 for _t in _visible:
-                    _render_task_row(_t)
+                    _render_task_row(_t, kp=f"{_tkey}_")
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE — HISTORY
