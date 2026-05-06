@@ -8,7 +8,7 @@ import openpyxl
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-from datetime import date
+from datetime import date, timedelta
 from collections import Counter
 from openpyxl.styles import Font, PatternFill, Alignment
 from task_store import (
