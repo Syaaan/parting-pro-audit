@@ -1523,9 +1523,10 @@ elif page == "⚡  Zapier Audit":
 # ═════════════════════════════════════════════════════════════════════════════
 elif page == "✅  Tasks":
     _tasks   = load_tasks()
-    _today   = date.today().isoformat()
+    _today   = date.today()
+    _today_s = _today.isoformat()
     _active  = [t for t in _tasks if t.get("status") != "done"]
-    _done_td = [t for t in _tasks if t.get("status") == "done" and t.get("completed_at","")[:10] == _today]
+    _done_td = [t for t in _tasks if t.get("status") == "done" and t.get("completed_at","")[:10] == _today_s]
     _overdue = [t for t in _tasks if _is_overdue(t)]
     _p1_open = [t for t in _tasks if t.get("priority") == "P1" and t.get("status") != "done"]
 
@@ -1534,11 +1535,12 @@ elif page == "✅  Tasks":
         <div class="section-icon">✅</div>
         <div class="section-head-text">
             <h3>Task Tracker</h3>
-            <p>Daily, weekly, monthly, and one-off tasks — use the sidebar to add tasks</p>
+            <p>Stored in Airtable — tasks persist across sessions. Use the sidebar to add tasks.</p>
         </div>
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Metrics ───────────────────────────────────────────────────────────────
     mc1, mc2, mc3, mc4 = st.columns(4)
     mc1.metric("Total Active", len(_active),  help="All non-done tasks")
     mc2.metric("Done Today",   len(_done_td), help="Completed today")
@@ -1547,25 +1549,139 @@ elif page == "✅  Tasks":
 
     st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-    _qv = st.text_input("⚡ Quick add a task…", placeholder="Type title and press Enter to add", key="quick_capture", label_visibility="collapsed")
+    # ── Quick-add ─────────────────────────────────────────────────────────────
+    _qv = st.text_input(
+        "quick_add", placeholder="⚡ Quick-add a task — type and press Enter",
+        key="quick_capture", label_visibility="collapsed"
+    )
     if _qv and _qv != st.session_state.get("_last_quick", ""):
         st.session_state["_last_quick"] = _qv
         add_task({"title": _qv.strip(), "type": "one-off", "priority": "P2"})
         st.rerun()
 
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
-    _filter_map = {"All": "all", "Daily": "daily", "Weekly": "weekly", "Monthly": "monthly", "One-Off": "one-off"}
-    _filter_label = st.selectbox(
-        "Filter by type",
-        list(_filter_map.keys()),
-        key="task_filter",
-        label_visibility="collapsed",
+    # ── Date filter ───────────────────────────────────────────────────────────
+    st.markdown("**📅 View tasks for:**")
+    _df_c1, _df_c2, _df_c3, _df_c4, _df_c5 = st.columns([1,1,1,1,2])
+    _view_date = st.session_state.get("task_view_date", _today)
+
+    with _df_c1:
+        if st.button("Today", use_container_width=True, key="btn_today"):
+            st.session_state["task_view_date"] = _today
+            st.rerun()
+    with _df_c2:
+        if st.button("Yesterday", use_container_width=True, key="btn_yesterday"):
+            st.session_state["task_view_date"] = _today - timedelta(days=1)
+            st.rerun()
+    with _df_c3:
+        if st.button("This Week", use_container_width=True, key="btn_week"):
+            st.session_state["task_view_date"] = _today
+            st.rerun()
+    with _df_c4:
+        if st.button("This Month", use_container_width=True, key="btn_month"):
+            st.session_state["task_view_date"] = _today
+            st.rerun()
+    with _df_c5:
+        _picked = st.date_input(
+            "Pick a date", value=_view_date, key="task_date_picker",
+            label_visibility="collapsed"
+        )
+        if _picked != _view_date:
+            st.session_state["task_view_date"] = _picked
+            st.rerun()
+
+    _view_date = st.session_state.get("task_view_date", _today)
+
+    # ── Filter label ──────────────────────────────────────────────────────────
+    _vd_monday = _view_date - timedelta(days=_view_date.weekday())
+    _vd_sunday = _vd_monday + timedelta(days=6)
+    _date_label = (
+        "Today" if _view_date == _today
+        else f"Week of {_vd_monday.strftime('%b %-d')} – {_vd_sunday.strftime('%b %-d')}"
+        if st.session_state.get("_week_mode")
+        else _view_date.strftime("%A, %B %-d %Y")
+    )
+    st.markdown(
+        f"<div style='font-size:13px;color:#4a5568;margin:8px 0 4px 0;'>"
+        f"Showing tasks for <strong style='color:#1a2b4a;'>{_view_date.strftime('%A, %B %-d, %Y')}</strong></div>",
+        unsafe_allow_html=True
     )
 
-    st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-    _render_task_tab(_filter_map[_filter_label], _tasks)
-    st.markdown("</div>", unsafe_allow_html=True)
+    # ── Determine which tasks are relevant for _view_date ─────────────────────
+    def _task_visible(task, view_date):
+        task_type = task.get("type", "one-off")
+        # Parse created_at
+        raw_created = task.get("created_at", "")
+        try:
+            created_date = datetime.fromisoformat(raw_created).date() if raw_created else date.min
+        except Exception:
+            created_date = date.min
+        if created_date > view_date:
+            return False  # Task didn't exist on this date
+
+        if task_type == "daily":
+            return True
+        elif task_type == "weekly":
+            # Show for any day in the same Mon–Sun week
+            view_monday = view_date - timedelta(days=view_date.weekday())
+            task_monday = created_date - timedelta(days=created_date.weekday())
+            return view_monday >= task_monday
+        elif task_type == "monthly":
+            # Show for any day in any month since creation
+            return (view_date.year, view_date.month) >= (created_date.year, created_date.month)
+        elif task_type == "one-off":
+            due = task.get("due_date")
+            if not due:
+                return True  # No due date → always show
+            try:
+                return date.fromisoformat(str(due)) == view_date
+            except Exception:
+                return True
+        return True
+
+    # ── Type filter tabs ──────────────────────────────────────────────────────
+    _type_tabs = st.tabs(["All", "Daily", "Weekly", "Monthly", "One-Off"])
+    _type_keys = ["all", "daily", "weekly", "monthly", "one-off"]
+
+    for _tab, _tkey in zip(_type_tabs, _type_keys):
+        with _tab:
+            if _tkey == "all":
+                _visible = [t for t in _tasks if _task_visible(t, _view_date)]
+            else:
+                _visible = [t for t in _tasks if t.get("type") == _tkey and _task_visible(t, _view_date)]
+
+            if not _visible:
+                st.markdown(
+                    "<div style='padding:24px 0;text-align:center;color:#9aa5b4;font-size:14px;'>"
+                    "No tasks for this date — add one using the sidebar.</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                _pri_ord    = {"P1": 0, "P2": 1, "P3": 2}
+                _status_ord = {"todo": 0, "in-progress": 1, "done": 2}
+                _visible    = sorted(
+                    _visible,
+                    key=lambda t: (
+                        _status_ord.get(t.get("status", "todo"), 0),
+                        _pri_ord.get(t.get("priority", "P3"), 2),
+                    )
+                )
+                _n_done    = sum(1 for t in _visible if t.get("status") == "done")
+                _n_overdue = sum(1 for t in _visible if _is_overdue(t))
+                _ov_badge  = (
+                    f' &nbsp;<span style="color:#e05252;font-weight:600;">⚠️ {_n_overdue} overdue</span>'
+                    if _n_overdue else ""
+                )
+                st.markdown(
+                    f'<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding-bottom:8px;'
+                    f'border-bottom:1px solid #e4e7ef;">'
+                    f'<strong style="color:#1a2b4a;">{len(_visible)}</strong> tasks &nbsp;·&nbsp; '
+                    f'<span style="color:#1a9e5c;font-weight:600;">✅ {_n_done} done</span>{_ov_badge}</div>',
+                    unsafe_allow_html=True
+                )
+                for _t in _visible:
+                    _render_task_row(_t)
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PAGE — HISTORY
