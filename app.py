@@ -2,31 +2,102 @@ import re
 import io
 import json
 import time
-import datetime
 import requests
 import openpyxl
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from collections import Counter
 from openpyxl.styles import Font, PatternFill, Alignment
+from onboarding_wrapper import OnboardingAutomation, STEPS
 from task_store import (
-    load_tasks, add_task, update_task, delete_task, reset_recurring_tasks
+    load_tasks, add_task, update_task, delete_task, reset_recurring_tasks,
+    load_members, add_member, update_member, delete_member,
 )
-import inbox_scanner
 
-# ── Helpers: secrets ──────────────────────────────────────────────────────────
-def _secret(key, default=""):
-    try:
-        return st.secrets[key]
-    except Exception:
-        return default
-
-# ── Airtable Config ───────────────────────────────────────────────────────────
-TOKEN = _secret("AIRTABLE_TOKEN")
-AT_HEADERS = {"Authorization": f"Bearer {TOKEN}"} if TOKEN else {}
+# ── Config ────────────────────────────────────────────────────────────────────
+TOKEN = "patm2acj3jyDwBfyD.3fb175e7596542e2a9be3acc07700272cf8cb09028c58cc03a6d8bc5be022542"
+HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 BASE_IDS = ["appbXFzZnhij88tnQ", "appXT2xJZ1zgll4fG"]
+
+N8N_WEBHOOK = "http://localhost:5678/webhook/run-zap-audit"
+AUDIT_DIR = Path(__file__).parent.parent / "query"
+
+# ── Zap Audit helpers ─────────────────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def fetch_query_zap_list():
+    url = "https://api.airtable.com/v0/appbXFzZnhij88tnQ/Funeral%20Home%20Information"
+    params = {
+        "filterByFormula": 'AND({Active Status:}="Active",{Parting Pro ID:}>0)',
+        "fields[]": ["Funeral Home Name:", "Parting Pro ID:", "Go-Live Date"],
+        "pageSize": 100,
+    }
+    resp = requests.get(url, headers={"Authorization": f"Bearer {TOKEN}"}, params=params, timeout=15)
+    resp.raise_for_status()
+    return resp.json().get("records", [])
+
+def load_audit_runs() -> list[dict]:
+    """Read all audit_run_*.json files from the query/ folder, newest first."""
+    files = sorted(AUDIT_DIR.glob("audit_run_*.json"), reverse=True)
+    runs = []
+    for f in files:
+        try:
+            runs.append(json.loads(f.read_text(encoding="utf-8")))
+        except Exception:
+            pass
+    return runs
+
+def latest_audit_df(runs: list[dict]) -> pd.DataFrame:
+    """Flatten the most recent run into a DataFrame, upgrading No Cases → Dead."""
+    if not runs:
+        return pd.DataFrame()
+    latest = runs[0]
+    results = latest.get("results", [])
+
+    # Build a history map: parting_pro_id → list of statuses (newest first)
+    history: dict[int, list[str]] = {}
+    for run in runs[1:]:
+        for r in run.get("results", []):
+            ppid = r.get("parting_pro_id")
+            if ppid:
+                history.setdefault(ppid, []).append(r.get("status", ""))
+
+    rows = []
+    for r in results:
+        ppid = r.get("parting_pro_id")
+        status = r.get("status", "")
+        if status == "No Cases":
+            # Upgrade to Dead if no Healthy run in the last 14 days
+            past = history.get(ppid, [])
+            had_healthy_recently = any(s == "Healthy" for s in past[:14])
+            if not had_healthy_recently and len(past) >= 2:
+                status = "Dead"
+        rows.append({
+            "Funeral Home": r.get("funeral_home_name", ""),
+            "ID": ppid,
+            "DB Cases": r.get("db_row_count", 0),
+            "Airtable Records": r.get("airtable_record_count", 0),
+            "Status": status,
+            "Notes": r.get("notes", ""),
+            "Go-Live Date": r.get("go_live_date", ""),
+        })
+    return pd.DataFrame(rows)
+
+STATUS_EMOJI = {
+    "Healthy": "🟢",
+    "No Cases": "🟡",
+    "Missing Data": "🔴",
+    "Dead": "⚫",
+    "New": "🔵",
+}
+STATUS_COLOR = {
+    "Healthy": "#1a9e5c",
+    "No Cases": "#e07b39",
+    "Missing Data": "#e05252",
+    "Dead": "#4a5568",
+    "New": "#3b7de8",
+}
 TARGET = re.compile(r"^\+1\d{10}$")
 PLACEHOLDER_PATTERNS = [
     re.compile(r"\{[^}]+\}"),
@@ -35,18 +106,9 @@ PLACEHOLDER_PATTERNS = [
     re.compile(r"\{\{[^}]+\}\}"),
 ]
 
-# ── Zapier Config ─────────────────────────────────────────────────────────────
-ZAPIER_GQL_URL = "https://zapier.com/api/reporting/graphql"
-ZAP_FAILURE_RATE_THRESHOLD = 10
-ZAP_VOLUME_SPIKE_THRESHOLD  = 3.0
-ZAP_VOLUME_DROP_THRESHOLD   = 0.2
-
-# ═════════════════════════════════════════════════════════════════════════════
-# AIRTABLE HELPERS
-# ═════════════════════════════════════════════════════════════════════════════
-
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def get_base_name(base_id):
-    r = requests.get("https://api.airtable.com/v0/meta/bases", headers=AT_HEADERS)
+    r = requests.get("https://api.airtable.com/v0/meta/bases", headers=HEADERS)
     r.raise_for_status()
     for b in r.json().get("bases", []):
         if b["id"] == base_id:
@@ -71,6 +133,7 @@ def categorize_phone(value):
     return "Non-standard format"
 
 def fix_phone_number(value):
+    """Return reformatted E.164 number, or None if not auto-fixable."""
     digits = re.sub(r"\D", "", str(value).strip())
     if len(digits) == 10:
         return f"+1{digits}"
@@ -82,6 +145,7 @@ def has_placeholder(text):
     return any(p.search(text) for p in PLACEHOLDER_PATTERNS)
 
 def extract_tokens(content):
+    """Return a comma-separated string of every placeholder token found in content."""
     found = []
     for p in PLACEHOLDER_PATTERNS:
         found.extend(p.findall(str(content)))
@@ -97,6 +161,11 @@ def categorize_message(content):
     return "OK"
 
 def patch_phone_records(base_id, rows):
+    """
+    Patch Contact Cell for a list of records in batches of 10 (Airtable limit).
+    rows: list of dicts with 'record_id' and 'fixed_value' keys.
+    Returns (success_count, error_record_ids).
+    """
     url = f"https://api.airtable.com/v0/{base_id}/Contact%20List"
     success, errors = 0, []
     for i in range(0, len(rows), 10):
@@ -108,15 +177,20 @@ def patch_phone_records(base_id, rows):
             ]
         }
         try:
-            resp = requests.patch(url, headers=AT_HEADERS, json=payload)
+            resp = requests.patch(url, headers=HEADERS, json=payload)
             resp.raise_for_status()
             success += len(batch)
         except Exception:
             errors.extend([r["record_id"] for r in batch])
-        time.sleep(0.22)
+        time.sleep(0.22)   # ~4.5 req/sec — safely under Airtable's 5 req/sec limit
     return success, errors
 
 def revert_phone_records(base_id, revert_rows):
+    """
+    Restore Contact Cell to original values.
+    revert_rows: list of dicts with 'record_id' and 'original_value' keys.
+    Returns (success_count, error_record_ids).
+    """
     url = f"https://api.airtable.com/v0/{base_id}/Contact%20List"
     success, errors = 0, []
     for i in range(0, len(revert_rows), 10):
@@ -128,7 +202,7 @@ def revert_phone_records(base_id, revert_rows):
             ]
         }
         try:
-            resp = requests.patch(url, headers=AT_HEADERS, json=payload)
+            resp = requests.patch(url, headers=HEADERS, json=payload)
             resp.raise_for_status()
             success += len(batch)
         except Exception:
@@ -145,7 +219,7 @@ def fetch_records(base_id, table, fields, filter_formula=None):
             params["offset"] = offset
         if filter_formula:
             params["filterByFormula"] = filter_formula
-        r = requests.get(url, headers=AT_HEADERS, params=params)
+        r = requests.get(url, headers=HEADERS, params=params)
         r.raise_for_status()
         data = r.json()
         records.extend(data.get("records", []))
@@ -242,172 +316,7 @@ def build_excel(results_dict):
     buf.seek(0)
     return buf
 
-# ═════════════════════════════════════════════════════════════════════════════
-# ZAPIER HELPERS
-# ═════════════════════════════════════════════════════════════════════════════
-
-def _zap_headers(session_token, csrf_token):
-    return {
-        "Cookie": f"zapsession={session_token}; csrftoken={csrf_token}",
-        "X-CSRFToken": csrf_token,
-        "Content-Type": "application/json",
-        "Referer": "https://zapier.com/app/history",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    }
-
-def fetch_zap_runs_for_range(session_token, csrf_token, account_id, start_date_str, end_date_str):
-    hdrs = _zap_headers(session_token, csrf_token)
-    runs = []
-    offset = 0
-    limit = 500
-
-    while True:
-        payload = {
-            "query": """
-                query GetRuns($accountId: ID!, $limit: Int!, $offset: Int!) {
-                    zapRuns(accountId: $accountId, limit: $limit, offset: $offset) {
-                        pageInfo { hasNextPage }
-                        edges {
-                            id
-                            status
-                            startTime
-                            zap { id title }
-                        }
-                    }
-                }
-            """,
-            "variables": {
-                "accountId": str(account_id),
-                "limit": limit,
-                "offset": offset,
-            },
-        }
-        r = requests.post(ZAPIER_GQL_URL, headers=hdrs, json=payload, timeout=30)
-        r.raise_for_status()
-        data = r.json()
-        if "errors" in data:
-            raise ValueError(f"Zapier API error: {data['errors']}")
-
-        edges = data["data"]["zapRuns"]["edges"]
-        has_next = data["data"]["zapRuns"]["pageInfo"]["hasNextPage"]
-        past_range = False
-
-        for run in edges:
-            run_date = run["startTime"][:10]
-            if start_date_str <= run_date <= end_date_str:
-                runs.append(run)
-            elif run_date < start_date_str:
-                past_range = True
-                break
-
-        if past_range or not has_next:
-            break
-
-        offset += limit
-        time.sleep(0.2)
-
-    return runs
-
-def build_zap_summaries(runs):
-    zap_map = {}
-    for run in runs:
-        zap_id = run["zap"]["id"]
-        title = run["zap"]["title"]
-        if zap_id not in zap_map:
-            zap_map[zap_id] = {
-                "Zap Title": title,
-                "Total Runs": 0,
-                "Success": 0,
-                "Errors": 0,
-                "Halted": 0,
-                "Filtered": 0,
-                "Throttled": 0,
-                "Other": 0,
-                "_zap_id": zap_id,
-            }
-        z = zap_map[zap_id]
-        z["Total Runs"] += 1
-        status = (run.get("status") or "").lower()
-        if status == "success":
-            z["Success"] += 1
-        elif status == "error":
-            z["Errors"] += 1
-        elif status == "halted":
-            z["Halted"] += 1
-        elif status == "filtered":
-            z["Filtered"] += 1
-        elif status == "throttled":
-            z["Throttled"] += 1
-        else:
-            z["Other"] += 1
-
-    rows = []
-    for z in zap_map.values():
-        t = z["Total Runs"]
-        rows.append({
-            **z,
-            "Error Rate": f"{round(z['Errors']/t*100, 1)}%" if t else "0%",
-            "Success Rate": f"{round(z['Success']/t*100, 1)}%" if t else "0%",
-            "_error_rate_num": round(z["Errors"] / t * 100, 1) if t else 0,
-            "_success_rate_num": round(z["Success"] / t * 100, 1) if t else 0,
-        })
-    return rows
-
-def detect_zap_flags(summaries):
-    flags = []
-    for z in summaries:
-        title = z["Zap Title"]
-        total = z["Total Runs"]
-        errors = z["Errors"]
-        halted = z["Halted"]
-        filtered = z["Filtered"]
-        error_rate = z["_error_rate_num"]
-        success_rate = z["_success_rate_num"]
-
-        if errors >= 3:
-            flags.append({
-                "Severity": "🔴 Critical",
-                "Type": "Repeated Failures",
-                "Zap": title,
-                "Detail": f"{errors} errors today ({error_rate}% error rate).",
-            })
-        elif error_rate >= ZAP_FAILURE_RATE_THRESHOLD and errors > 0:
-            flags.append({
-                "Severity": "⚠️ Warning",
-                "Type": "High Error Rate",
-                "Zap": title,
-                "Detail": f"{error_rate}% error rate ({errors}/{total} runs).",
-            })
-
-        if total >= 5 and success_rate < 50 and error_rate < ZAP_FAILURE_RATE_THRESHOLD:
-            flags.append({
-                "Severity": "⚠️ Warning",
-                "Type": "Low Success Rate",
-                "Zap": title,
-                "Detail": f"Only {success_rate}% success rate.",
-            })
-
-        if halted > 0:
-            flags.append({
-                "Severity": "⚠️ Warning",
-                "Type": "Halted Runs",
-                "Zap": title,
-                "Detail": f"{halted} run(s) halted — check filter or path logic.",
-            })
-
-        if total > 10 and filtered == total:
-            flags.append({
-                "Severity": "⚠️ Warning",
-                "Type": "All Filtered",
-                "Zap": title,
-                "Detail": f"All {total} runs were filtered — trigger may be too broad.",
-            })
-
-    return flags
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE CONFIG
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Page Config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Aftercare Texting Audit — Parting Pro",
     layout="wide",
@@ -422,17 +331,8 @@ html, body, [class*="css"] {
     font-family: 'Inter', sans-serif;
 }
 
-#MainMenu, footer { visibility: hidden; }
-
-/* Hide Streamlit toolbar (deploy/share/settings) but keep sidebar toggle */
-[data-testid="stToolbar"] { visibility: hidden !important; }
-[data-testid="stDecoration"] { display: none !important; }
-[data-testid="stStatusWidget"] { visibility: hidden !important; }
-header[data-testid="stHeader"] {
-    background: transparent !important;
-    border-bottom: none !important;
-    box-shadow: none !important;
-}
+/* Hide default streamlit header */
+#MainMenu, footer, header { visibility: hidden; }
 
 .stApp { background: #f0f2f7; }
 
@@ -513,10 +413,9 @@ header[data-testid="stHeader"] {
 }
 
 /* ── Metric Cards ── */
-.metrics-row { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.metrics-row { display: flex; gap: 16px; margin-bottom: 20px; }
 .metric {
     flex: 1;
-    min-width: 120px;
     background: white;
     border-radius: 12px;
     padding: 20px 24px;
@@ -601,7 +500,9 @@ header[data-testid="stHeader"] {
 .issue-warn { color: #e07b39; font-weight: 600; }
 .issue-error { color: #e05252; font-weight: 600; }
 
-/* ══ GLOBAL TEXT VISIBILITY ══════════════════════════════════════════════════ */
+/* ══ GLOBAL TEXT VISIBILITY — main content area only ══════════════════ */
+
+/* Every p, span, label, div text in the main block */
 section[data-testid="stMain"] p,
 section[data-testid="stMain"] span,
 section[data-testid="stMain"] li,
@@ -615,6 +516,7 @@ section[data-testid="stMain"] h5 {
     color: #1a2b4a !important;
 }
 
+/* Checkbox label text */
 section[data-testid="stMain"] .stCheckbox label,
 section[data-testid="stMain"] .stCheckbox label p,
 section[data-testid="stMain"] [data-testid="stCheckbox"] label {
@@ -623,6 +525,7 @@ section[data-testid="stMain"] [data-testid="stCheckbox"] label {
     font-size: 14px !important;
 }
 
+/* Number input label + field */
 section[data-testid="stMain"] .stNumberInput label,
 section[data-testid="stMain"] .stNumberInput label p,
 section[data-testid="stMain"] [data-testid="stNumberInput"] label {
@@ -636,6 +539,7 @@ section[data-testid="stMain"] .stNumberInput input {
     border: 1px solid #c8cdd8 !important;
 }
 
+/* Spinner / loading text */
 section[data-testid="stMain"] [data-testid="stSpinner"] p,
 section[data-testid="stMain"] [data-testid="stSpinner"] span,
 section[data-testid="stMain"] [data-testid="stSpinnerContainer"] p,
@@ -644,19 +548,21 @@ section[data-testid="stMain"] .stSpinner p {
     font-weight: 500 !important;
 }
 
+/* Alert / banner body text */
 section[data-testid="stMain"] [data-testid="stAlert"] p,
 section[data-testid="stMain"] .stAlert p {
     font-weight: 500 !important;
 }
 
+/* Bar chart axis labels */
 section[data-testid="stMain"] .vega-embed text,
 section[data-testid="stMain"] .vega-embed .mark-text text {
     fill: #1a2b4a !important;
 }
 
-.hero-title    { color: #ffffff !important; }
-.hero-subtitle { color: rgba(255,255,255,0.65) !important; }
-.hero-badge    { color: rgba(255,255,255,0.85) !important; }
+/* Keep hero / sidebar text untouched (white) */
+.hero, .hero * { color: inherit; }
+section[data-testid="stSidebar"] * { color: rgba(255,255,255,0.85) !important; }
 
 /* ── Sidebar ── */
 section[data-testid="stSidebar"] {
@@ -665,60 +571,7 @@ section[data-testid="stSidebar"] {
 section[data-testid="stSidebar"] * {
     color: rgba(255,255,255,0.85) !important;
 }
-
-/* ── Sidebar collapse button (< arrow at right edge when sidebar is open) ── */
-[data-testid="stSidebarCollapseButton"] {
-    opacity: 1 !important;
-    visibility: visible !important;
-    background: #1a2b4a !important;
-    border-radius: 0 12px 12px 0 !important;
-    min-height: 68px !important;
-    min-width: 36px !important;
-    width: 36px !important;
-    box-shadow: 4px 0 20px rgba(26,43,74,0.6) !important;
-    border: none !important;
-    cursor: pointer !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-[data-testid="stSidebarCollapseButton"] svg,
-[data-testid="stSidebarCollapseButton"] svg *,
-[data-testid="stSidebarCollapseButton"] path,
-[data-testid="stSidebarCollapseButton"] polyline,
-[data-testid="stSidebarCollapseButton"] line {
-    fill: white !important;
-    stroke: white !important;
-    color: white !important;
-}
-
-/* ── Expand button (> shown when sidebar is collapsed) ── */
-[data-testid="collapsedControl"] {
-    opacity: 1 !important;
-    visibility: visible !important;
-    background: #1a2b4a !important;
-    border-radius: 0 12px 12px 0 !important;
-    min-height: 68px !important;
-    min-width: 36px !important;
-    width: 36px !important;
-    box-shadow: 4px 0 20px rgba(26,43,74,0.6) !important;
-    border: none !important;
-    cursor: pointer !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-}
-[data-testid="collapsedControl"] svg,
-[data-testid="collapsedControl"] svg *,
-[data-testid="collapsedControl"] path,
-[data-testid="collapsedControl"] polyline,
-[data-testid="collapsedControl"] line {
-    fill: white !important;
-    stroke: white !important;
-    color: white !important;
-}
-section[data-testid="stSidebar"] .stButton > button,
-section[data-testid="stSidebar"] .stFormSubmitButton > button {
+section[data-testid="stSidebar"] .stButton > button {
     background: rgba(255,255,255,0.1) !important;
     color: white !important;
     border: 1px solid rgba(255,255,255,0.2) !important;
@@ -727,80 +580,11 @@ section[data-testid="stSidebar"] .stFormSubmitButton > button {
     transition: background 0.2s !important;
     width: 100%;
 }
-section[data-testid="stSidebar"] .stButton > button:hover,
-section[data-testid="stSidebar"] .stFormSubmitButton > button:hover {
+section[data-testid="stSidebar"] .stButton > button:hover {
     background: rgba(255,255,255,0.2) !important;
 }
 section[data-testid="stSidebar"] hr {
     border-color: rgba(255,255,255,0.1) !important;
-}
-
-/* ── Sidebar inputs — light background, dark text ── */
-/* Use component-class selectors (higher specificity than the broad * rule) */
-section[data-testid="stSidebar"] .stTextInput *,
-section[data-testid="stSidebar"] .stTextInput input {
-    color: #1a2b4a !important;
-    background: #ffffff !important;
-}
-section[data-testid="stSidebar"] .stTextArea *,
-section[data-testid="stSidebar"] .stTextArea textarea {
-    color: #1a2b4a !important;
-    background: #ffffff !important;
-}
-section[data-testid="stSidebar"] .stSelectbox *,
-section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] > div {
-    color: #1a2b4a !important;
-    background: #ffffff !important;
-}
-section[data-testid="stSidebar"] .stDateInput *,
-section[data-testid="stSidebar"] .stDateInput input {
-    color: #1a2b4a !important;
-    background: #ffffff !important;
-}
-
-/* ── Main content inputs ── */
-section[data-testid="stMain"] input,
-section[data-testid="stMain"] textarea {
-    background: #ffffff !important;
-    color: #1a2b4a !important;
-    border: 1px solid #c8cdd8 !important;
-    border-radius: 8px !important;
-}
-section[data-testid="stMain"] input::placeholder,
-section[data-testid="stMain"] textarea::placeholder {
-    color: #9aa5b4 !important;
-}
-section[data-testid="stMain"] [data-baseweb="select"] > div:first-child {
-    background: #ffffff !important;
-    border: 1px solid #c8cdd8 !important;
-}
-section[data-testid="stMain"] [data-baseweb="select"] span,
-section[data-testid="stMain"] [data-baseweb="select"] div {
-    color: #1a2b4a !important;
-}
-
-/* ── Sidebar radio nav ── */
-section[data-testid="stSidebar"] .stRadio > div {
-    gap: 4px !important;
-}
-section[data-testid="stSidebar"] .stRadio label {
-    background: rgba(255,255,255,0.05) !important;
-    border-radius: 8px !important;
-    padding: 10px 14px !important;
-    font-size: 14px !important;
-    font-weight: 500 !important;
-    cursor: pointer !important;
-    transition: background 0.15s !important;
-    display: flex !important;
-    align-items: center !important;
-}
-section[data-testid="stSidebar"] .stRadio label:hover {
-    background: rgba(255,255,255,0.12) !important;
-}
-section[data-testid="stSidebar"] .stRadio [aria-checked="true"] + div label,
-section[data-testid="stSidebar"] .stRadio label:has(input:checked) {
-    background: rgba(255,255,255,0.18) !important;
-    font-weight: 600 !important;
 }
 
 /* ── Download Button ── */
@@ -823,28 +607,1045 @@ div[data-testid="stDownloadButton"] > button:hover {
 hr { border-color: #e4e7ef !important; margin: 24px 0 !important; }
 
 /* ── Task Tracker — Priority Pills ── */
-.pill-p1 { display:inline-block; background:#fde8e8; color:#c0392b; border:1px solid #f5c6c6; border-radius:20px; padding:2px 10px; font-size:11px; font-weight:700; }
-.pill-p2 { display:inline-block; background:#fff0e0; color:#c47f00; border:1px solid #f5d9a0; border-radius:20px; padding:2px 10px; font-size:11px; font-weight:700; }
-.pill-p3 { display:inline-block; background:#f0f2f7; color:#4a5568; border:1px solid #d0d5e0; border-radius:20px; padding:2px 10px; font-size:11px; font-weight:700; }
-.type-badge { display:inline-block; background:#eef2ff; color:#3b5bdb; border-radius:6px; padding:2px 8px; font-size:11px; font-weight:600; text-transform:capitalize; }
-.task-title { font-size:14px; font-weight:600; color:#1a2b4a; }
-.task-title-done { font-size:14px; font-weight:500; color:#9aa5b4; text-decoration:line-through; }
-.task-desc { font-size:12px; color:#6b7a94; margin-top:2px; }
-.overdue { color:#e05252 !important; font-weight:600 !important; }
+.pill-p1 {
+    display: inline-block;
+    background: #fde8e8; color: #c0392b;
+    border: 1px solid #f5c6c6;
+    border-radius: 20px; padding: 2px 10px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+}
+.pill-p2 {
+    display: inline-block;
+    background: #fff0e0; color: #c47f00;
+    border: 1px solid #f5d9a0;
+    border-radius: 20px; padding: 2px 10px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+}
+.pill-p3 {
+    display: inline-block;
+    background: #f0f2f7; color: #4a5568;
+    border: 1px solid #d0d5e0;
+    border-radius: 20px; padding: 2px 10px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+}
+.type-badge {
+    display: inline-block;
+    background: #eef2ff; color: #3b5bdb;
+    border-radius: 6px; padding: 2px 8px;
+    font-size: 11px; font-weight: 600;
+    text-transform: capitalize;
+}
+.task-title { font-size: 14px; font-weight: 600; color: #1a2b4a; }
+.task-title-done { font-size: 14px; font-weight: 500; color: #9aa5b4; text-decoration: line-through; }
+.task-desc { font-size: 12px; color: #6b7a94; margin-top: 2px; }
+.overdue { color: #e05252 !important; font-weight: 600 !important; }
+.due-ok { color: #4a5568; }
 </style>
 """, unsafe_allow_html=True)
 
-# ═════════════════════════════════════════════════════════════════════════════
-# TASK TRACKER HELPERS
-# ═════════════════════════════════════════════════════════════════════════════
+# ── Task Tracker — session state & recurrence reset ──────────────────────────
+for _k in ("editing_task_id", "deleting_task_id"):
+    if _k not in st.session_state:
+        st.session_state[_k] = None
+reset_recurring_tasks()
 
-def _priority_pill(p):
+# ── Hero Section ──────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="hero">
+    <div class="hero-left">
+        <img class="hero-logo" src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo_white.png" />
+        <div class="hero-title">Aftercare Texting — Audit Dashboard</div>
+        <div class="hero-subtitle">Monitor phone number formats and outbound message quality across all bases</div>
+    </div>
+    <div class="hero-badge">🔒 Internal Tool &nbsp;·&nbsp; Airtable Connected</div>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("""
+    <div style="text-align:center; padding: 16px 0 8px 0;">
+        <img src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo_white.png"
+             style="height:28px; filter: brightness(0) invert(1);" />
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Audit Controls</div>", unsafe_allow_html=True)
+    run_phones = st.button("📞  Run Phone Audit", use_container_width=True)
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    run_messages = st.button("💬  Run Message Audit", use_container_width=True)
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    run_zap_audit = st.button("🔍  Run Zap Audit Now", use_container_width=True)
+    st.markdown("---")
+    st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:8px;'>Connected Bases</div>", unsafe_allow_html=True)
+    for b in BASE_IDS:
+        st.markdown(f"<div style='font-size:12px; opacity:0.7; padding: 4px 0;'>• {b}</div>", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("<div style='font-size:11px; opacity:0.4; text-align:center;'>Parting Pro Internal · 2025</div>", unsafe_allow_html=True)
+    st.markdown("---")
+    st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Add Task</div>", unsafe_allow_html=True)
+    _members_for_form = [m for m in load_members() if m.get("active")]
+    _name_to_id = {m["name"]: m["id"] for m in _members_for_form}
+    with st.form("sidebar_add_task", clear_on_submit=True):
+        _title = st.text_input("Title *", placeholder="What needs to be done?")
+        _desc  = st.text_area("Description", placeholder="Optional…", height=60)
+        _type  = st.selectbox("Type", ["daily", "weekly", "monthly", "one-off"])
+        _pri   = st.selectbox("Priority", ["P1", "P2", "P3"], index=1)
+        _due   = st.date_input("Due Date (optional)", value=None) if _type == "one-off" else None
+        _assignees = st.multiselect("Assign to", options=list(_name_to_id.keys()),
+                                    help="Pick from active team members. Manage the roster from the Tasks tab.")
+        _sub   = st.form_submit_button("➕ Add Task", use_container_width=True)
+    if _sub:
+        if _title.strip():
+            add_task({"title": _title.strip(), "description": _desc.strip(),
+                      "type": _type, "priority": _pri,
+                      "due_date": str(_due) if _due else None,
+                      "assignee_ids": [_name_to_id[n] for n in _assignees]})
+            st.rerun()
+        else:
+            st.warning("Title required.")
+
+# ── Tabs ──────────────────────────────────────────────────────────────────────
+tab_texting, tab_zap, tab_onboarding, tab_tasks = st.tabs(["📞  Texting Audit", "🔍  Zap Audit", "🚀  Onboarding", "✅  Tasks"])
+
+tab_texting.__enter__()
+
+# ── Phone Audit ───────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="section-wrap">
+    <div class="section-head">
+        <div class="section-icon">📞</div>
+        <div class="section-head-text">
+            <h3>Step 1 — Phone Number Audit</h3>
+            <p>Validates Contact Cell format against E.164 standard (+1XXXXXXXXXX)</p>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
+if run_phones:
+    for base_id in BASE_IDS:
+        with st.spinner(f"Fetching records from {base_id}..."):
+            base_name = get_base_name(base_id)
+            df = run_phone_audit(base_id, base_name)
+            st.session_state[f"phone_{base_id}"] = df
+            st.session_state[f"phone_name_{base_id}"] = base_name
+    st.success("✅ Phone audit complete for both bases!")
+
+for base_id in BASE_IDS:
+    if f"phone_{base_id}" in st.session_state:
+        df = st.session_state[f"phone_{base_id}"]
+        base_name = st.session_state[f"phone_name_{base_id}"]
+
+        total = len(df)
+        ok = len(df[df["Issue"] == "OK"])
+        flagged = len(df[df["Issue"] != "OK"])
+        pass_rate = round((ok / total * 100), 1) if total else 0
+
+        st.markdown(f'<div class="base-tag">🏢 {base_name}</div>', unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="metrics-row">
+            <div class="metric blue">
+                <div class="m-label">Total Records</div>
+                <div class="m-value">{total:,}</div>
+                <div class="m-sub">Contact List</div>
+            </div>
+            <div class="metric green">
+                <div class="m-label">✅ Passing</div>
+                <div class="m-value">{ok:,}</div>
+                <div class="m-sub">{pass_rate}% pass rate</div>
+            </div>
+            <div class="metric red">
+                <div class="m-label">⚠️ Flagged</div>
+                <div class="m-value">{flagged:,}</div>
+                <div class="m-sub">Need attention</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        issue_counts = df[df["Issue"] != "OK"]["Issue"].value_counts().reset_index()
+        issue_counts.columns = ["Issue", "Count"]
+        if not issue_counts.empty:
+            st.markdown("**Issue Breakdown**")
+            st.bar_chart(issue_counts.set_index("Issue"), color="#1a2b4a")
+
+        flagged_df = df[df["Issue"] != "OK"]
+        if not flagged_df.empty:
+            st.markdown(f"**Flagged Records — {len(flagged_df)} total**")
+            st.dataframe(flagged_df, use_container_width=True, hide_index=True)
+
+        # ── Auto-Fix Section ──────────────────────────────────────────────
+        FIXABLE_ISSUES = {"Missing country code (+1)", "Has digits but wrong format"}
+        fixable_rows = []
+        for _, row in df[df["Issue"].isin(FIXABLE_ISSUES)].iterrows():
+            fixed = fix_phone_number(row["Current Value"])
+            if fixed:
+                fixable_rows.append({
+                    "record_id": row["Record ID"],
+                    "Contact Full Name": row["Contact Full Name"],
+                    "Funeral Home": row["Funeral Home"],
+                    "Current Value": row["Current Value"],
+                    "Fixed Value": fixed,
+                    "Issue": row["Issue"],
+                })
+
+        if fixable_rows:
+            fix_df = pd.DataFrame(fixable_rows)
+
+            # Track which record IDs have already been patched this session
+            applied_key = f"fix_applied_{base_id}"
+            if applied_key not in st.session_state:
+                st.session_state[applied_key] = set()
+
+            pending = [r for r in fixable_rows
+                       if r["record_id"] not in st.session_state[applied_key]]
+            n_done = len(fixable_rows) - len(pending)
+
+            st.markdown(f"**🔧 {len(fix_df)} number(s) can be auto-fixed**")
+            st.dataframe(
+                fix_df[["Contact Full Name", "Funeral Home", "Current Value", "Fixed Value", "Issue"]],
+                use_container_width=True, hide_index=True
+            )
+
+            if n_done:
+                st.success(f"✅ {n_done} of {len(fixable_rows)} record(s) fixed so far this session.")
+
+            if pending:
+                confirmed = st.checkbox(
+                    f"I've reviewed the changes above and want to apply them to {base_name}",
+                    key=f"confirm_fix_{base_id}"
+                )
+                if confirmed:
+                    max_test = min(10, len(pending))
+                    test_n = int(st.number_input(
+                        f"How many records to patch first? (max 10 for a safe test run)",
+                        min_value=1, max_value=max_test, value=min(3, max_test),
+                        key=f"test_n_{base_id}"
+                    ))
+
+                    if n_done == 0:
+                        # No test run yet — only offer the test button
+                        if st.button(f"🧪 Test fix ({test_n} record(s))", key=f"test_fix_{base_id}"):
+                            with st.spinner(f"Patching {test_n} record(s) in Airtable…"):
+                                ok, errs = patch_phone_records(base_id, pending[:test_n])
+                            for r in pending[:ok]:
+                                st.session_state[applied_key].add(r["record_id"])
+                            if errs:
+                                st.warning(f"Fixed {ok}/{test_n}. ⚠️ {len(errs)} failed — try again.")
+                            else:
+                                st.success(f"✅ Test passed — {ok} record(s) fixed. "
+                                           f"Check Airtable to confirm, then apply the rest below.")
+                            st.rerun()
+                    else:
+                        # Test already ran — offer both another test batch and apply-all
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button(f"🧪 Test another {test_n} record(s)",
+                                         key=f"test_fix_{base_id}"):
+                                with st.spinner(f"Patching {test_n} record(s)…"):
+                                    ok, errs = patch_phone_records(base_id, pending[:test_n])
+                                for r in pending[:ok]:
+                                    st.session_state[applied_key].add(r["record_id"])
+                                if errs:
+                                    st.warning(f"Fixed {ok}/{test_n}. ⚠️ {len(errs)} failed.")
+                                else:
+                                    st.success(f"✅ Fixed {ok} more. "
+                                               f"{len(pending) - ok} remaining.")
+                                st.rerun()
+                        with col2:
+                            if st.button(f"✅ Apply all {len(pending)} remaining",
+                                         key=f"apply_all_{base_id}"):
+                                with st.spinner(f"Patching {len(pending)} record(s)…"):
+                                    ok, errs = patch_phone_records(base_id, pending)
+                                for r in pending[:ok]:
+                                    st.session_state[applied_key].add(r["record_id"])
+                                if errs:
+                                    st.warning(f"Fixed {ok}. ⚠️ {len(errs)} failed — re-run audit to retry.")
+                                else:
+                                    st.success(f"✅ All done! Fixed {ok} records in {base_name}.")
+                                st.rerun()
+            else:
+                # Every fixable record has been patched
+                st.success(f"✅ All {len(fixable_rows)} numbers in {base_name} are fixed!")
+                if st.button("🔄 Re-run audit to confirm", key=f"clear_{base_id}"):
+                    del st.session_state[f"phone_{base_id}"]
+                    del st.session_state[f"phone_name_{base_id}"]
+                    if applied_key in st.session_state:
+                        del st.session_state[applied_key]
+                    st.rerun()
+
+        elif flagged > 0:
+            st.info("ℹ️ No auto-fixable numbers found — all flagged records need manual review in Airtable.")
+        # ─────────────────────────────────────────────────────────────────
+        st.markdown("---")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+if any(f"phone_{b}" in st.session_state for b in BASE_IDS):
+    all_dfs = {
+        f"{st.session_state[f'phone_name_{b}']} - Issues": st.session_state[f"phone_{b}"][st.session_state[f"phone_{b}"]["Issue"] != "OK"]
+        for b in BASE_IDS if f"phone_{b}" in st.session_state
+    }
+    excel_buf = build_excel(all_dfs)
+    st.download_button("⬇️ Download Phone Audit Report (.xlsx)",
+                       excel_buf, "phone_audit_results.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+# ── Message Audit ─────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="section-wrap">
+    <div class="section-head">
+        <div class="section-icon">💬</div>
+        <div class="section-head-text">
+            <h3>Step 2 — Message Content Audit</h3>
+            <p>Scans outbound messages for unfilled placeholders, empty content, and short messages</p>
+        </div>
+    </div>
+""", unsafe_allow_html=True)
+
+if run_messages:
+    for base_id in BASE_IDS:
+        with st.spinner(f"Fetching outbound messages from {base_id}..."):
+            base_name = get_base_name(base_id)
+            df = run_message_audit(base_id, base_name)
+            st.session_state[f"msg_{base_id}"] = df
+            st.session_state[f"msg_name_{base_id}"] = base_name
+    st.success("✅ Message audit complete for both bases!")
+
+for base_id in BASE_IDS:
+    if f"msg_{base_id}" in st.session_state:
+        df = st.session_state[f"msg_{base_id}"]
+        base_name = st.session_state[f"msg_name_{base_id}"]
+
+        # ── Test filter ───────────────────────────────────────────────
+        excl_test = st.checkbox(
+            "🔕 Exclude messages containing 'test'",
+            value=True,
+            key=f"excl_test_{base_id}"
+        )
+        df_view = (
+            df[~df["Content (first 200 chars)"].str.contains("test", case=False, na=False)]
+            if excl_test else df
+        )
+
+        total = len(df_view)
+        ok = len(df_view[df_view["Issue"] == "OK"])
+        flagged = len(df_view[df_view["Issue"] != "OK"])
+        pass_rate = round((ok / total * 100), 1) if total else 0
+
+        st.markdown(f'<div class="base-tag">🏢 {base_name}</div>', unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="metrics-row">
+            <div class="metric blue">
+                <div class="m-label">Total Outbound</div>
+                <div class="m-value">{total:,}</div>
+                <div class="m-sub">Outbound messages</div>
+            </div>
+            <div class="metric green">
+                <div class="m-label">✅ Passing</div>
+                <div class="m-value">{ok:,}</div>
+                <div class="m-sub">{pass_rate}% pass rate</div>
+            </div>
+            <div class="metric red">
+                <div class="m-label">⚠️ Flagged</div>
+                <div class="m-value">{flagged:,}</div>
+                <div class="m-sub">Need attention</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        issue_counts = df_view[df_view["Issue"] != "OK"]["Issue"].value_counts().reset_index()
+        issue_counts.columns = ["Issue", "Count"]
+        if not issue_counts.empty:
+            st.markdown("**Issue Breakdown**")
+            st.bar_chart(issue_counts.set_index("Issue"), color="#1a2b4a")
+
+        flagged_df = df_view[df_view["Issue"] != "OK"]
+        if not flagged_df.empty:
+            st.markdown(f"**Flagged Records — {len(flagged_df)} total**")
+            st.dataframe(flagged_df, use_container_width=True, hide_index=True)
+
+        # ── Placeholder Breakdown ─────────────────────────────────────
+        ph_df = df_view[df_view["Issue"] == "Unfilled placeholder"].copy()
+        if not ph_df.empty:
+            ph_df["Bad Token(s)"] = ph_df["Content (first 200 chars)"].apply(extract_tokens)
+
+            all_tokens = Counter()
+            for content in ph_df["Content (first 200 chars)"]:
+                for p in PLACEHOLDER_PATTERNS:
+                    for m in p.findall(str(content)):
+                        all_tokens[m] += 1
+
+            st.markdown("**📋 Unfilled Placeholder Breakdown**")
+            col1, col2 = st.columns([1, 2])
+            with col1:
+                st.markdown("**Token frequency**")
+                st.dataframe(
+                    pd.DataFrame(all_tokens.most_common(), columns=["Bad Token", "Times Sent"]),
+                    use_container_width=True, hide_index=True
+                )
+            with col2:
+                st.markdown(f"**{len(ph_df)} affected message(s)**")
+                st.dataframe(
+                    ph_df[["Contact Full Name", "Funeral Home",
+                           "Bad Token(s)", "Content (first 200 chars)"]],
+                    use_container_width=True, hide_index=True
+                )
+            st.info(
+                "ℹ️ These messages were already sent with unfilled tokens. "
+                "The contacts above may need a follow-up message. "
+                "Fix the corresponding message templates to prevent future occurrences."
+            )
+        # ─────────────────────────────────────────────────────────────
+        st.markdown("---")
+
+st.markdown("</div>", unsafe_allow_html=True)
+
+if any(f"msg_{b}" in st.session_state for b in BASE_IDS):
+    all_dfs = {
+        f"{st.session_state[f'msg_name_{b}']} - Issues": st.session_state[f"msg_{b}"][st.session_state[f"msg_{b}"]["Issue"] != "OK"]
+        for b in BASE_IDS if f"msg_{b}" in st.session_state
+    }
+    excel_buf = build_excel(all_dfs)
+    st.download_button("⬇️ Download Message Audit Report (.xlsx)",
+                       excel_buf, "messages_audit_results.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+st.markdown("""
+<div style="text-align:center; padding: 32px 0 16px 0;">
+    <img src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo.png" style="height:22px; opacity:0.4;" />
+    <div style="font-size:11px; color:#b0b8c8; margin-top:8px;">Aftercare Texting Audit Tool · Internal Use Only</div>
+</div>
+""", unsafe_allow_html=True)
+
+tab_texting.__exit__(None, None, None)
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 2 — Zap Audit
+# ════════════════════════════════════════════════════════════════════════════
+with tab_zap:
+    # ── Trigger n8n run ───────────────────────────────────────────────────
+    if run_zap_audit:
+        with st.spinner("Triggering n8n audit workflow…"):
+            try:
+                resp = requests.post(N8N_WEBHOOK, json={}, timeout=300)
+                if resp.ok:
+                    st.success("✅ Audit run complete — results saved.")
+                    st.rerun()
+                else:
+                    st.error(f"n8n returned {resp.status_code}: {resp.text[:200]}")
+            except requests.exceptions.ConnectionError:
+                st.error("Could not reach n8n at localhost:5678. Make sure n8n is running and the workflow is active.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    # ── Load data ─────────────────────────────────────────────────────────
+    runs = load_audit_runs()
+
+    # ── Query Zaps List (always visible) ──────────────────────────────────
+    st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+    st.markdown('<div class="section-head"><div class="section-icon">🔎</div><div class="section-head-text"><h3>Query Zaps</h3><p>Active "Query Data to upload in Airtable" zaps and their latest audit results</p></div></div>', unsafe_allow_html=True)
+
+    # Build lookup from latest audit run if available
+    audit_lookup = {}
+    if runs:
+        for r in runs[0].get("results", []):
+            audit_lookup[int(r.get("parting_pro_id", 0))] = r
+
+    try:
+        fh_records = fetch_query_zap_list()
+        qz_rows = []
+        for rec in fh_records:
+            f = rec.get("fields", {})
+            ppid = int(f.get("Parting Pro ID:", 0) or 0)
+            if not ppid:
+                continue
+            fh_name = (f.get("Funeral Home Name:", "") or "").strip()
+            go_live  = f.get("Go-Live Date", "") or "—"
+            zap_title = f"{fh_name} - Query Data to upload in airtable - funeral_home_id = {ppid}"
+
+            # Overlay audit result if available
+            audit = audit_lookup.get(ppid)
+            if audit:
+                status   = audit.get("status", "")
+                db_count = audit.get("db_row_count", 0)
+                at_count = audit.get("airtable_record_count", 0)
+                notes    = audit.get("notes", "") or "—"
+                if status == "New":
+                    result = "⏭️ Skipped (New FH)"
+                elif db_count == 0:
+                    result = "🟡 Filtered — no cases in window"
+                elif db_count > 0 and at_count > 0:
+                    result = "✅ Success"
+                elif db_count > 0 and at_count == 0:
+                    result = "🛑 Halted — cases not pushed"
+                else:
+                    result = "❌ Error"
+                last_checked = runs[0].get("run_date", "—")
+            else:
+                status, db_count, at_count, notes = "—", "—", "—", "—"
+                result = "⏳ Not yet audited"
+                last_checked = "—"
+
+            qz_rows.append({
+                "Zap Title": zap_title,
+                "Go-Live": go_live,
+                "Query Result": result,
+                "DB Cases (7–14d)": db_count,
+                "Airtable Records (7d)": at_count,
+                "Status": f"{STATUS_EMOJI.get(status, '')} {status}".strip(),
+                "Notes": notes,
+                "Last Checked": last_checked,
+            })
+
+        qz_df = pd.DataFrame(qz_rows)
+
+        qz_c1, qz_c2 = st.columns([3, 2])
+        with qz_c1:
+            qz_search = st.text_input("Search", key="qz_always_search", placeholder="Search funeral home…")
+        with qz_c2:
+            qz_filter = st.multiselect(
+                "Filter by result",
+                options=["✅ Success", "🛑 Halted — cases not pushed", "🟡 Filtered — no cases in window", "⏳ Not yet audited", "⏭️ Skipped (New FH)", "❌ Error"],
+                default=[],
+                key="qz_always_filter"
+            )
+
+        qz_view = qz_df.copy()
+        if qz_search:
+            qz_view = qz_view[qz_view["Zap Title"].str.contains(qz_search, case=False, na=False)]
+        if qz_filter:
+            qz_view = qz_view[qz_view["Query Result"].isin(qz_filter)]
+
+        st.dataframe(qz_view, use_container_width=True, hide_index=True)
+        audited = sum(1 for r in qz_rows if r["Last Checked"] != "—")
+        st.caption(f"{len(qz_view)} of {len(qz_df)} query zaps shown  ·  {audited} audited  ·  {len(qz_df) - audited} pending first run")
+
+    except Exception as e:
+        import traceback
+        st.error(f"❌ Query Zaps error: {e}")
+        st.code(traceback.format_exc())
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if not runs:
+        st.info("No audit runs yet — click **Run Zap Audit Now** in the sidebar to populate results above.")
+    else:
+        latest = runs[0]
+        summary = latest.get("summary", {})
+        run_date = latest.get("run_date", "—")
+        run_at = latest.get("run_at", "")
+        df = latest_audit_df(runs)
+
+        # ── Summary cards ─────────────────────────────────────────────────
+        st.markdown(f"""
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+            <div style="font-size:18px; font-weight:700; color:#1a2b4a;">Zap Health Report</div>
+            <div style="font-size:12px; color:#4a5568; background:#f0f2f7; padding:6px 14px; border-radius:20px;">
+                Last run: {run_date} &nbsp;·&nbsp; {summary.get('total', 0)} funeral homes
+            </div>
+        </div>
+        <div class="metrics-row">
+            <div class="metric green">
+                <div class="m-label">🟢 Healthy</div>
+                <div class="m-value">{summary.get('healthy', 0)}</div>
+                <div class="m-sub">Zap working</div>
+            </div>
+            <div class="metric" style="border-left:3px solid #e07b39;">
+                <div class="m-label">🟡 No Cases</div>
+                <div class="m-value" style="color:#e07b39;">{summary.get('no_cases', 0)}</div>
+                <div class="m-sub">Quiet window</div>
+            </div>
+            <div class="metric red">
+                <div class="m-label">🔴 Missing Data</div>
+                <div class="m-value">{summary.get('missing_data', 0)}</div>
+                <div class="m-sub">Action needed</div>
+            </div>
+            <div class="metric" style="border-left:3px solid #4a5568;">
+                <div class="m-label">⚫ Dead</div>
+                <div class="m-value" style="color:#4a5568;">{summary.get('dead', 0)}</div>
+                <div class="m-sub">Investigate</div>
+            </div>
+            <div class="metric blue">
+                <div class="m-label">🔵 New</div>
+                <div class="m-value">{summary.get('new_fh', 0)}</div>
+                <div class="m-sub">Recently onboarded</div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── Action required banner ────────────────────────────────────────
+        flagged = df[df["Status"].isin(["Missing Data", "Dead"])]
+        if not flagged.empty:
+            items_html = "".join(
+                f"<div style='padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.1);'>"
+                f"{STATUS_EMOJI.get(row['Status'], '')} <strong>{row['Funeral Home']}</strong>"
+                f" &nbsp;<span style='opacity:0.7; font-size:12px;'>(ID: {row['ID']})</span>"
+                f"{'  — ' + row['Notes'] if row['Notes'] else ''}</div>"
+                for _, row in flagged.iterrows()
+            )
+            st.markdown(f"""
+            <div style="background:#e05252; border-radius:12px; padding:20px 24px; margin-bottom:20px; color:white;">
+                <div style="font-weight:700; font-size:15px; margin-bottom:12px;">⚠️ {len(flagged)} funeral home(s) need attention</div>
+                {items_html}
+            </div>
+            """, unsafe_allow_html=True)
+
+        # ── Monitored Zaps ────────────────────────────────────────────────
+        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+        st.markdown('<div class="section-head"><div class="section-icon">⚡</div><div class="section-head-text"><h3>Monitored Zaps</h3><p>Zapier automations being tracked by this audit</p></div></div>', unsafe_allow_html=True)
+
+        zap_rows = []
+        for r in latest.get("results", []):
+            status = r.get("status", "")
+            db_count = r.get("db_row_count", 0)
+            at_count = r.get("airtable_record_count", 0)
+
+            # Derive query run result label
+            if status == "New":
+                query_result = "⏭️ Skipped (New FH)"
+            elif db_count == 0 and at_count == 0:
+                query_result = "🟡 No data found"
+            elif db_count > 0 and at_count > 0:
+                query_result = "✅ Success"
+            elif db_count > 0 and at_count == 0:
+                query_result = "❌ Failed — DB has cases, Airtable empty"
+            elif db_count == 0 and at_count > 0:
+                query_result = "✅ Success (Airtable only)"
+            else:
+                query_result = "⚠️ Unknown"
+
+            zap_rows.append({
+                "Funeral Home": r.get("funeral_home_name", ""),
+                "Parting Pro ID": r.get("parting_pro_id", ""),
+                "Go-Live Date": r.get("go_live_date", "") or "—",
+                "Query Result": query_result,
+                "DB Cases (7–14d)": db_count,
+                "Airtable Records (7d)": at_count,
+                "Status": f"{STATUS_EMOJI.get(status, '')} {status}",
+                "Notes": r.get("notes", "") or "—",
+                "Last Checked": run_date,
+            })
+        zap_df = pd.DataFrame(zap_rows)
+
+        zap_col1, zap_col2 = st.columns([3, 2])
+        with zap_col1:
+            zap_search = st.text_input("Search", key="monitored_zap_search", placeholder="Search funeral home…")
+        with zap_col2:
+            success_count = sum(1 for r in zap_rows if "✅" in r["Query Result"])
+            fail_count = sum(1 for r in zap_rows if "❌" in r["Query Result"])
+            skip_count = sum(1 for r in zap_rows if "⏭️" in r["Query Result"])
+            st.markdown(f"""
+            <div style="margin-top:28px; font-size:13px; color:#4a5568;">
+                <strong>{len(zap_df)}</strong> monitored &nbsp;·&nbsp;
+                ✅ {success_count} success &nbsp;·&nbsp;
+                ❌ {fail_count} failed &nbsp;·&nbsp;
+                ⏭️ {skip_count} skipped
+            </div>
+            """, unsafe_allow_html=True)
+
+        if zap_search:
+            zap_df = zap_df[zap_df["Funeral Home"].str.contains(zap_search, case=False, na=False)]
+
+        st.dataframe(zap_df, use_container_width=True, hide_index=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Query Zaps — Zap-by-Zap Style ────────────────────────────────
+        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+        st.markdown('<div class="section-head"><div class="section-icon">⚡</div><div class="section-head-text"><h3>Query Zaps — Zap-by-Zap Breakdown</h3><p>Only "Query Data to upload in Airtable" zaps · stats across all audit runs</p></div></div>', unsafe_allow_html=True)
+
+        # Aggregate stats across ALL historical runs per FH
+        qzb_stats = {}  # ppid → {title, total, success, halted, filtered, errors}
+        for run in runs:
+            for r in run.get("results", []):
+                ppid     = r.get("parting_pro_id", 0)
+                fh_name  = r.get("funeral_home_name", "")
+                db_count = r.get("db_row_count", 0)
+                at_count = r.get("airtable_record_count", 0)
+                status   = r.get("status", "")
+
+                if ppid not in qzb_stats:
+                    qzb_stats[ppid] = {
+                        "Zap Title": f"{fh_name} - Query Data to upload in airtable - funeral_home_id = {ppid}",
+                        "Total Runs": 0, "Success": 0, "Errors": 0,
+                        "Halted": 0, "Filtered": 0, "Throttled": 0,
+                    }
+
+                s = qzb_stats[ppid]
+                s["Total Runs"] += 1
+                if status == "New":
+                    pass  # don't count skipped runs
+                elif db_count == 0:
+                    s["Filtered"] += 1
+                elif db_count > 0 and at_count > 0:
+                    s["Success"] += 1
+                elif db_count > 0 and at_count == 0:
+                    s["Halted"] += 1
+                else:
+                    s["Errors"] += 1
+
+        qzb_rows = []
+        for ppid, s in sorted(qzb_stats.items(), key=lambda x: x[1]["Zap Title"]):
+            total = s["Total Runs"]
+            succ  = s["Success"]
+            err   = s["Errors"]
+            error_rate   = f"{(err / total * 100):.1f}%" if total > 0 else "0.0%"
+            success_rate = f"{(succ / total * 100):.1f}%" if total > 0 else "0.0%"
+            qzb_rows.append({
+                "Zap Title":    s["Zap Title"],
+                "Total Runs":   total,
+                "Success":      succ,
+                "Errors":       err,
+                "Halted":       s["Halted"],
+                "Filtered":     s["Filtered"],
+                "Throttled":    s["Throttled"],
+                "Error Rate":   error_rate,
+                "Success Rate": success_rate,
+            })
+
+        qzb_df = pd.DataFrame(qzb_rows)
+
+        qzb_search = st.text_input("Search zap", key="qzb_search", placeholder="Search funeral home…")
+        if qzb_search:
+            qzb_df = qzb_df[qzb_df["Zap Title"].str.contains(qzb_search, case=False, na=False)]
+
+        st.dataframe(qzb_df, use_container_width=True, hide_index=True)
+        st.caption(
+            f"{len(qzb_df)} query zaps  ·  "
+            f"✅ {sum(s['Success'] for s in qzb_stats.values())} success  ·  "
+            f"🛑 {sum(s['Halted'] for s in qzb_stats.values())} halted  ·  "
+            f"🟡 {sum(s['Filtered'] for s in qzb_stats.values())} filtered  ·  "
+            f"❌ {sum(s['Errors'] for s in qzb_stats.values())} errors"
+        )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Full results table ────────────────────────────────────────────
+        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+        st.markdown('<div class="section-head"><div class="section-icon">📋</div><div class="section-head-text"><h3>All Funeral Homes</h3><p>Filter by status to focus on what needs attention</p></div></div>', unsafe_allow_html=True)
+
+        col_filter, col_search = st.columns([2, 3])
+        with col_filter:
+            status_filter = st.multiselect(
+                "Filter by status",
+                options=["Healthy", "No Cases", "Missing Data", "Dead", "New"],
+                default=["Missing Data", "Dead"],
+                key="zap_status_filter"
+            )
+        with col_search:
+            search = st.text_input("Search funeral home", key="zap_search", placeholder="Type to search…")
+
+        filtered = df.copy()
+        if status_filter:
+            filtered = filtered[filtered["Status"].isin(status_filter)]
+        if search:
+            filtered = filtered[filtered["Funeral Home"].str.contains(search, case=False, na=False)]
+
+        def _color_status(val):
+            color = STATUS_COLOR.get(val, "#4a5568")
+            return f"color: {color}; font-weight: 600;"
+
+        if not filtered.empty:
+            st.dataframe(
+                filtered.style.applymap(_color_status, subset=["Status"]),
+                use_container_width=True,
+                hide_index=True
+            )
+            st.caption(f"{len(filtered)} of {len(df)} funeral homes shown")
+        else:
+            st.info("No records match the current filter.")
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── History (if multiple runs) ────────────────────────────────────
+        if len(runs) > 1:
+            st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+            st.markdown('<div class="section-head"><div class="section-icon">📈</div><div class="section-head-text"><h3>Audit History</h3><p>Status counts over time</p></div></div>', unsafe_allow_html=True)
+
+            history_rows = []
+            for run in runs[:30]:
+                s = run.get("summary", {})
+                history_rows.append({
+                    "Date": run.get("run_date", ""),
+                    "Healthy": s.get("healthy", 0),
+                    "No Cases": s.get("no_cases", 0),
+                    "Missing Data": s.get("missing_data", 0),
+                    "Dead": s.get("dead", 0),
+                    "New": s.get("new_fh", 0),
+                })
+            hist_df = pd.DataFrame(history_rows).set_index("Date")
+            st.line_chart(hist_df[["Healthy", "Missing Data", "Dead"]])
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Download ─────────────────────────────────────────────────────
+        csv = df.to_csv(index=False)
+        st.download_button(
+            "⬇️ Download Audit Report (.csv)",
+            csv, f"zap_audit_{run_date}.csv", mime="text/csv"
+        )
+
+# ── Onboarding Tab ────────────────────────────────────────────────────────────
+tab_onboarding.__enter__()
+
+st.markdown("""
+<div class="section-wrap">
+    <div class="section-head">
+        <div class="section-icon">🚀</div>
+        <div class="section-head-text">
+            <h3>Funeral Home Onboarding Automation</h3>
+            <p>Run automated onboarding workflows in the cloud</p>
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Initialize session state for onboarding
+if "onboarding" not in st.session_state:
+    st.session_state.onboarding = None
+if "onboarding_step" not in st.session_state:
+    st.session_state.onboarding_step = None
+if "onboarding_output" not in st.session_state:
+    st.session_state.onboarding_output = []
+if "onboarding_input" not in st.session_state:
+    st.session_state.onboarding_input = ""
+
+# ── How to Use ────────────────────────────────────────────────────────────────
+st.info(
+    "**How to use:**  Select a step from the dropdown and click **▶️ Start Step**. "
+    "Steps must be run **in order (1 → 7)** for each new funeral home. "
+    "The automation will ask you questions — type your answer and press **Send**, "
+    "or use the **Yes / No** buttons for confirmation prompts. "
+    "Do not close or navigate away while a step is running."
+)
+
+st.warning(
+    "⚠️ **Make sure you're working on the correct funeral home** before starting. "
+    "Each step makes live changes in Airtable, Twilio, and Zapier."
+)
+
+col_step, col_action = st.columns([3, 1])
+
+with col_step:
+    selected_step = st.selectbox(
+        "Select Onboarding Step",
+        options=[f"{s['emoji']} Step {s['key']} – {s['title']}" for s in STEPS],
+        help="Choose which onboarding step to run for the current funeral home"
+    )
+    step_key = selected_step.split(" ")[2]
+
+    # Show description for the selected step
+    step_meta = next((s for s in STEPS if s["key"] == step_key), None)
+    if step_meta:
+        st.caption(f"📋 {step_meta['description']}")
+
+with col_action:
+    st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
+    can_start = st.session_state.onboarding is None or not st.session_state.onboarding.is_running()
+    if st.button("▶️ Start Step", use_container_width=True, disabled=not can_start,
+                 help="A step is already running — finish or cancel it first" if not can_start else None):
+        ob = OnboardingAutomation()
+        st.session_state.onboarding = ob
+        st.session_state.onboarding_step = step_key
+        st.session_state.onboarding_output = []
+        try:
+            with st.spinner(f"Running Step {step_key}…"):
+                ob.start_step(step_key)
+                # Wait up to 15 s for the first interactive prompt
+                deadline = time.time() + 15
+                while time.time() < deadline:
+                    msg = ob.get_output()
+                    if msg is None:
+                        time.sleep(0.15)
+                        continue
+                    t = msg.get("t")
+                    if t == "log":
+                        st.session_state.onboarding_output.append(("log", msg.get("m", "")))
+                    elif t == "ask":
+                        st.session_state.onboarding_output.append(("ask", msg.get("q", "")))
+                        break
+                    elif t == "done":
+                        st.session_state.onboarding_output.append(("done", "✅ Step completed!"))
+                        st.session_state.onboarding = None
+                        break
+                    elif t == "error":
+                        st.session_state.onboarding_output.append(("error", msg.get("m", "Unknown error")))
+                        st.session_state.onboarding = None
+                        break
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ Failed to start onboarding: {str(e)}")
+            st.session_state.onboarding = None
+
+st.markdown("---")
+
+# Display onboarding process
+if st.session_state.onboarding and st.session_state.onboarding.is_running():
+    active_step = st.session_state.get("onboarding_step", "?")
+    active_meta = next((s for s in STEPS if s["key"] == active_step), None)
+    active_title = active_meta["title"] if active_meta else f"Step {active_step}"
+    st.markdown(
+        f"<div style='background:#1e3a5f;border-left:4px solid #4a9eff;padding:10px 16px;"
+        f"border-radius:4px;margin-bottom:12px;'>"
+        f"<strong style='color:#4a9eff'>⚙️ Running:</strong> "
+        f"<span style='color:#e0e0e0'>Step {active_step} – {active_title}</span>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    output_container = st.container()
+    input_container = st.container()
+
+    # Display all accumulated output
+    with output_container:
+        for msg_type, content in st.session_state.onboarding_output:
+            if msg_type == "log":
+                st.markdown(
+                    f"<div style='font-family:monospace;font-size:13px;padding:3px 8px;"
+                    f"background:#1a1a2e;border-radius:3px;color:#a8d8a8;margin:2px 0'>"
+                    f"▸ {content}</div>",
+                    unsafe_allow_html=True
+                )
+            elif msg_type == "ask":
+                st.info(f"❓ {content}")
+            elif msg_type == "done":
+                st.success(content)
+            elif msg_type == "error":
+                st.error(f"❌ {content}")
+
+    # Input field for answers
+    with input_container:
+        last_msg = st.session_state.onboarding_output[-1] if st.session_state.onboarding_output else None
+        if last_msg and last_msg[0] == "ask":
+            st.caption("💡 Type a number to select from a list, or type **y** / **n** for yes/no questions. Use the buttons below as shortcuts.")
+            prefill = st.session_state.pop("_prefill_answer", "")
+            user_input = st.text_input("Your response:", value=prefill, key="onboarding_response",
+                                       placeholder="Type your answer here…")
+            col_send, col_yn, col_cancel = st.columns([2, 1, 1])
+            with col_send:
+                if st.button("Send ➤", use_container_width=True):
+                    if user_input.strip():
+                        try:
+                            ob = st.session_state.onboarding
+                            ob.send_answer(user_input)
+                            with st.spinner("Waiting for next prompt…"):
+                                deadline = time.time() + 15
+                                while time.time() < deadline:
+                                    msg = ob.get_output()
+                                    if msg is None:
+                                        time.sleep(0.15)
+                                        continue
+                                    t = msg.get("t")
+                                    if t == "log":
+                                        st.session_state.onboarding_output.append(("log", msg.get("m", "")))
+                                    elif t == "ask":
+                                        st.session_state.onboarding_output.append(("ask", msg.get("q", "")))
+                                        break
+                                    elif t == "done":
+                                        st.session_state.onboarding_output.append(("done", "✅ Step completed!"))
+                                        st.session_state.onboarding = None
+                                        break
+                                    elif t == "error":
+                                        st.session_state.onboarding_output.append(("error", msg.get("m", "Unknown error")))
+                                        st.session_state.onboarding = None
+                                        break
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to send answer: {str(e)}")
+            with col_yn:
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("✅ Yes", use_container_width=True, key="btn_yes",
+                                 help="Sends 'y' — use for yes/no confirmation prompts"):
+                        st.session_state["_prefill_answer"] = "y"
+                        st.rerun()
+                with c2:
+                    if st.button("❌ No", use_container_width=True, key="btn_no",
+                                 help="Sends 'n' — use for yes/no confirmation prompts"):
+                        st.session_state["_prefill_answer"] = "n"
+                        st.rerun()
+            with col_cancel:
+                if st.button("🛑 Cancel", use_container_width=True, key="btn_cancel",
+                             help="Stop the current step and discard progress"):
+                    ob = st.session_state.onboarding
+                    if ob:
+                        ob.stop()
+                    st.session_state.onboarding = None
+                    st.session_state.onboarding_output = []
+                    st.warning("Step cancelled.")
+                    st.rerun()
+elif st.session_state.onboarding_output:
+    st.markdown("""
+    <div class="section-wrap">
+        <div class="section-head">
+            <div class="section-icon">✅</div>
+            <div class="section-head-text">
+                <h3>Step Complete</h3>
+                <p>Process finished successfully</p>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.info("🎉 The onboarding step has been completed. You can start another step above or review the output below.")
+
+    st.markdown("**Process Output:**")
+    for msg_type, content in st.session_state.onboarding_output:
+        if msg_type == "log":
+            st.markdown(
+                f"<div style='font-family:monospace;font-size:13px;padding:3px 8px;"
+                f"background:#1a1a2e;border-radius:3px;color:#a8d8a8;margin:2px 0'>"
+                f"▸ {content}</div>",
+                unsafe_allow_html=True
+            )
+        elif msg_type == "ask":
+            st.info(f"❓ {content}")
+        elif msg_type == "done":
+            st.success(content)
+        elif msg_type == "error":
+            st.error(f"❌ {content}")
+
+    if st.button("Clear Output", use_container_width=True):
+        st.session_state.onboarding_output = []
+        st.rerun()
+else:
+    st.markdown("#### 🗂️ Step Overview")
+    st.caption("Run steps in order for each new funeral home. Click a step number in the dropdown above to select it, then press **▶️ Start Step**.")
+
+    for step in STEPS:
+        inactive = step["key"] == "6"  # QA step is currently inactive
+        border_color = "#555" if inactive else "#4a9eff"
+        opacity = "0.5" if inactive else "1"
+        badge = " <span style='font-size:11px;background:#555;color:#ccc;padding:1px 6px;border-radius:10px'>inactive</span>" if inactive else ""
+        st.markdown(
+            f"<div style='display:flex;align-items:center;gap:12px;padding:8px 14px;"
+            f"border-left:3px solid {border_color};background:#111827;"
+            f"border-radius:4px;margin-bottom:6px;opacity:{opacity}'>"
+            f"<span style='font-size:20px'>{step['emoji']}</span>"
+            f"<div>"
+            f"<strong style='color:#e0e0e0'>Step {step['key']}: {step['title']}</strong>{badge}<br>"
+            f"<span style='font-size:12px;color:#9ca3af'>{step['description']}</span>"
+            f"</div></div>",
+            unsafe_allow_html=True
+        )
+
+tab_onboarding.__exit__(None, None, None)
+
+# ════════════════════════════════════════════════════════════════════════════
+# TAB 4 — Task Tracker
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── Task Tracker helpers ──────────────────────────────────────────────────────
+
+def _priority_pill(p: str) -> str:
     icons = {"P1": "🔴", "P2": "🟠", "P3": "⚪"}
     cls   = {"P1": "pill-p1", "P2": "pill-p2", "P3": "pill-p3"}
     return f'<span class="{cls.get(p,"pill-p3")}">{icons.get(p,"")} {p}</span>'
 
-def _is_overdue(task):
-    if task.get("status") == "done" or task.get("type") != "one-off":
+
+def _is_overdue(task: dict) -> bool:
+    if task.get("status") == "done":
+        return False
+    if task.get("type") != "one-off":
         return False
     due = task.get("due_date")
     if not due:
@@ -854,49 +1655,92 @@ def _is_overdue(task):
     except ValueError:
         return False
 
-def _render_task_row(task, kp=""):
-    tid     = task["id"]
-    is_done = task.get("status") == "done"
-    col_chk, col_info, col_type, col_due, col_edit, col_del = st.columns([0.04, 0.52, 0.1, 0.18, 0.08, 0.08])
 
+def _due_label(task: dict) -> str:
+    due = task.get("due_date")
+    if not due:
+        return ""
+    cls  = "overdue" if _is_overdue(task) else "due-ok"
+    flag = " ⚠️" if _is_overdue(task) else ""
+    return f'<span class="{cls}" style="font-size:12px;">📅 {due}{flag}</span>'
+
+
+def _assignee_pills_html(task: dict) -> str:
+    ids = task.get("assignee_ids") or []
+    if not ids:
+        return ""
+    members = {m["id"]: m for m in load_members()}
+    pills = []
+    for mid in ids:
+        m = members.get(mid)
+        name = m["name"] if m else "(removed)"
+        pills.append(
+            f'<span style="background:#eef2ff;color:#4338ca;border-radius:10px;'
+            f'padding:1px 8px;font-size:11px;margin-right:4px;">@{name}</span>'
+        )
+    return '<div style="margin-top:4px;">' + "".join(pills) + '</div>'
+
+
+def _render_task_row(task: dict, tab_id: str = "all"):
+    tid     = task["id"]
+    k       = f"{tab_id}_{tid}"
+    is_done = task.get("status") == "done"
+
+    col_chk, col_info, col_type, col_due, col_edit, col_del = st.columns(
+        [0.04, 0.52, 0.1, 0.18, 0.08, 0.08]
+    )
     with col_chk:
-        checked = st.checkbox("", value=is_done, key=f"{kp}chk_{tid}", label_visibility="collapsed")
+        checked = st.checkbox(" ", value=is_done, key=f"chk_{k}", label_visibility="collapsed")
         if checked != is_done:
             update_task(tid, {"status": "done" if checked else "todo"})
-            st.session_state.editing_task_id = st.session_state.deleting_task_id = None
+            st.session_state.editing_task_id  = None
+            st.session_state.deleting_task_id = None
             st.rerun()
 
     with col_info:
         title_cls = "task-title-done" if is_done else "task-title"
-        desc_html = f'<div class="task-desc">{task["description"]}</div>' if task.get("description") else ""
-        st.markdown(f'<div class="{title_cls}">{_priority_pill(task.get("priority","P3"))} {task["title"]}</div>{desc_html}', unsafe_allow_html=True)
+        desc_html = (f'<div class="task-desc">{task["description"]}</div>'
+                     if task.get("description") else "")
+        st.markdown(
+            f'<div class="{title_cls}">'
+            f'{_priority_pill(task.get("priority","P3"))} {task["title"]}'
+            f'</div>{desc_html}{_assignee_pills_html(task)}',
+            unsafe_allow_html=True,
+        )
 
     with col_type:
-        st.markdown(f'<div style="margin-top:6px;"><span class="type-badge">{task.get("type","one-off")}</span></div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="margin-top:6px;"><span class="type-badge">{task.get("type","one-off")}</span></div>',
+            unsafe_allow_html=True,
+        )
 
     with col_due:
-        due = task.get("due_date")
-        if due:
-            cls = "overdue" if _is_overdue(task) else ""
-            flag = " ⚠️" if _is_overdue(task) else ""
-            st.markdown(f'<div style="margin-top:8px;"><span class="{cls}" style="font-size:12px;">📅 {due}{flag}</span></div>', unsafe_allow_html=True)
+        lbl = _due_label(task)
+        if lbl:
+            st.markdown(f'<div style="margin-top:8px;">{lbl}</div>', unsafe_allow_html=True)
 
     with col_edit:
         editing_this = st.session_state.editing_task_id == tid
-        if st.button("✖️" if editing_this else "✏️", key=f"{kp}edit_btn_{tid}", help="Edit"):
+        if st.button("✖️" if editing_this else "✏️", key=f"edit_btn_{k}", help="Edit"):
             st.session_state.editing_task_id  = None if editing_this else tid
             st.session_state.deleting_task_id = None
             st.rerun()
 
     with col_del:
         deleting_this = st.session_state.deleting_task_id == tid
-        if st.button("✖️" if deleting_this else "🗑️", key=f"{kp}del_btn_{tid}", help="Delete"):
+        if st.button("✖️" if deleting_this else "🗑️", key=f"del_btn_{k}", help="Delete"):
             st.session_state.deleting_task_id = None if deleting_this else tid
             st.session_state.editing_task_id  = None
             st.rerun()
 
+    # Inline edit form
     if st.session_state.editing_task_id == tid:
-        with st.form(key=f"{kp}edit_form_{tid}"):
+        _e_members = [m for m in load_members() if m.get("active")]
+        _e_name_to_id = {m["name"]: m["id"] for m in _e_members}
+        _e_id_to_name = {m["id"]: m["name"] for m in _e_members}
+        _current_assignees = [_e_id_to_name.get(i) for i in (task.get("assignee_ids") or [])
+                              if i in _e_id_to_name]
+        with st.form(key=f"edit_form_{k}"):
             st.markdown("**Edit Task**")
             e_title = st.text_input("Title", value=task.get("title", ""))
             e_desc  = st.text_area("Description", value=task.get("description", ""), height=70)
@@ -906,913 +1750,160 @@ def _render_task_row(task, kp=""):
             e_pri   = st.selectbox("Priority", _pris, index=_pris.index(task.get("priority", "P2")))
             raw_due = task.get("due_date")
             e_due   = st.date_input("Due Date", value=date.fromisoformat(raw_due) if raw_due else None)
+            e_assignees = st.multiselect("Assigned to", options=list(_e_name_to_id.keys()),
+                                         default=_current_assignees)
             s_col, c_col = st.columns(2)
             with s_col: save_btn   = st.form_submit_button("💾 Save",  use_container_width=True)
             with c_col: cancel_btn = st.form_submit_button("Cancel", use_container_width=True)
         if save_btn:
             update_task(tid, {"title": e_title.strip(), "description": e_desc.strip(),
                               "type": e_type, "priority": e_pri,
-                              "due_date": str(e_due) if e_due else None})
+                              "due_date": str(e_due) if e_due else None,
+                              "assignee_ids": [_e_name_to_id[n] for n in e_assignees]})
             st.session_state.editing_task_id = None
             st.rerun()
         if cancel_btn:
             st.session_state.editing_task_id = None
             st.rerun()
 
+    # Inline delete confirmation
     if st.session_state.deleting_task_id == tid:
         st.warning(f'Delete **"{task["title"]}"**? This cannot be undone.')
         dc, ac = st.columns(2)
         with dc:
-            if st.button("🗑️ Confirm", key=f"{kp}confirm_del_{tid}", use_container_width=True):
+            if st.button("🗑️ Confirm", key=f"confirm_del_{k}", use_container_width=True):
                 delete_task(tid)
                 st.session_state.deleting_task_id = None
                 st.rerun()
         with ac:
-            if st.button("Cancel", key=f"{kp}abort_del_{tid}", use_container_width=True):
+            if st.button("Cancel", key=f"abort_del_{k}", use_container_width=True):
                 st.session_state.deleting_task_id = None
                 st.rerun()
 
     st.markdown("<hr style='margin:4px 0; border-color:#f0f2f7;'>", unsafe_allow_html=True)
 
 
-def _render_task_tab(filter_type, all_tasks):
-    filtered = all_tasks if filter_type == "all" else [t for t in all_tasks if t.get("type") == filter_type]
+def _render_task_tab(filter_type: str, all_tasks: list):
+    filtered = all_tasks if filter_type == "all" else [
+        t for t in all_tasks if t.get("type") == filter_type
+    ]
     if not filtered:
-        st.markdown("<div style='padding:32px 0; text-align:center; color:#9aa5b4; font-size:14px;'>No tasks yet — add one using the sidebar form.</div>", unsafe_allow_html=True)
+        st.markdown(
+            "<div style='padding:32px 0; text-align:center; color:#9aa5b4; font-size:14px;'>"
+            "No tasks yet — add one using the sidebar form.</div>",
+            unsafe_allow_html=True,
+        )
         return
+
     pri_ord    = {"P1": 0, "P2": 1, "P3": 2}
     status_ord = {"todo": 0, "in-progress": 1, "done": 2}
-    filtered   = sorted(filtered, key=lambda t: (status_ord.get(t.get("status","todo"), 0), pri_ord.get(t.get("priority","P3"), 2)))
-    n_done     = sum(1 for t in filtered if t.get("status") == "done")
-    n_overdue  = sum(1 for t in filtered if _is_overdue(t))
-    ov_badge   = f' &nbsp;<span style="color:#e05252;font-weight:600;">⚠️ {n_overdue} overdue</span>' if n_overdue else ""
-    st.markdown(f'<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #e4e7ef;"><strong style="color:#1a2b4a;">{len(filtered)}</strong> tasks &nbsp;·&nbsp; <span style="color:#1a9e5c;font-weight:600;">✅ {n_done} done</span>{ov_badge}</div>', unsafe_allow_html=True)
-    for t in filtered:
-        _render_task_row(t)
-
-# ── Task Tracker init ─────────────────────────────────────────────────────────
-for _k in ("editing_task_id", "deleting_task_id"):
-    if _k not in st.session_state:
-        st.session_state[_k] = None
-reset_recurring_tasks()
-
-# ── Hero ──────────────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="hero">
-    <div class="hero-left">
-        <img class="hero-logo" src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo_white.png" />
-        <div class="hero-title">Aftercare Operations — Audit Dashboard</div>
-        <div class="hero-subtitle">Monitor Airtable data quality and Zapier automation health</div>
-    </div>
-    <div class="hero-badge">🔒 Internal Tool &nbsp;·&nbsp; Parting Pro</div>
-</div>
-""", unsafe_allow_html=True)
-
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-run_phones   = False
-run_messages = False
-
-with st.sidebar:
-    st.markdown("""
-    <div style="text-align:center; padding: 16px 0 8px 0;">
-        <img src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo_white.png"
-             style="height:28px; filter: brightness(0) invert(1);" />
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("---")
-
-    st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:10px;'>Menu</div>", unsafe_allow_html=True)
-    page = st.radio(
-        "Navigate",
-        options=["📋  Airtable Audit", "⚡  Zapier Audit", "✅  Tasks", "📊  History", "🤖  Smart Inbox"],
-        label_visibility="collapsed",
-        key="nav_page",
+    filtered   = sorted(
+        filtered,
+        key=lambda t: (status_ord.get(t.get("status","todo"), 0),
+                       pri_ord.get(t.get("priority","P3"), 2)),
     )
-    st.markdown("---")
 
-    if page == "📋  Airtable Audit":
-        st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Audit Controls</div>", unsafe_allow_html=True)
-        run_phones   = st.button("📞  Run Phone Audit",   use_container_width=True)
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
-        run_messages = st.button("💬  Run Message Audit", use_container_width=True)
-        st.markdown("---")
-        st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:8px;'>Connected Bases</div>", unsafe_allow_html=True)
-        for b in BASE_IDS:
-            st.markdown(f"<div style='font-size:12px; opacity:0.7; padding: 4px 0;'>• {b}</div>", unsafe_allow_html=True)
-        st.markdown("---")
-
-    elif page == "🤖  Smart Inbox":
-        st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Auto-Scan</div>", unsafe_allow_html=True)
-        st.selectbox(
-            "Scan every",
-            options=[5, 10, 15, 30],
-            index=1,
-            format_func=lambda x: f"{x} minutes",
-            key="inbox_refresh_interval",
-        )
-        st.markdown("---")
-
-    elif page == "✅  Tasks":
-        st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Add Task</div>", unsafe_allow_html=True)
-        with st.form("sidebar_add_task", clear_on_submit=True):
-            _title = st.text_input("Title *", placeholder="What needs to be done?")
-            _desc  = st.text_area("Description", placeholder="Optional…", height=60)
-            _type  = st.selectbox("Type", ["daily", "weekly", "monthly", "one-off"])
-            _pri   = st.selectbox("Priority", ["P1", "P2", "P3"], index=1)
-            _due   = st.date_input("Due Date", value=None) if _type == "one-off" else None
-            _sub   = st.form_submit_button("➕ Add Task", use_container_width=True)
-        if _sub:
-            if _title.strip():
-                try:
-                    add_task({"title": _title.strip(), "description": _desc.strip(),
-                              "type": _type, "priority": _pri,
-                              "due_date": str(_due) if _due else None})
-                except Exception as _e:
-                    st.error(f"❌ Could not save: {_e}")
-                st.rerun()
-            else:
-                st.warning("Title required.")
-        st.markdown("---")
-
-    st.markdown("<div style='font-size:11px; opacity:0.4; text-align:center;'>Parting Pro Internal · 2025</div>", unsafe_allow_html=True)
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE — AIRTABLE AUDIT
-# ═════════════════════════════════════════════════════════════════════════════
-if page == "📋  Airtable Audit":
-    # ── Phone Audit ───────────────────────────────────────────────────────────
-    st.markdown("""
-    <div class="section-wrap">
-        <div class="section-head">
-            <div class="section-icon">📞</div>
-            <div class="section-head-text">
-                <h3>Step 1 — Phone Number Audit</h3>
-                <p>Validates Contact Cell format against E.164 standard (+1XXXXXXXXXX)</p>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    if run_phones:
-        for base_id in BASE_IDS:
-            with st.spinner(f"Fetching records from {base_id}..."):
-                base_name = get_base_name(base_id)
-                df = run_phone_audit(base_id, base_name)
-                st.session_state[f"phone_{base_id}"] = df
-                st.session_state[f"phone_name_{base_id}"] = base_name
-        st.success("✅ Phone audit complete for both bases!")
-
-    for base_id in BASE_IDS:
-        if f"phone_{base_id}" in st.session_state:
-            df = st.session_state[f"phone_{base_id}"]
-            base_name = st.session_state[f"phone_name_{base_id}"]
-
-            total = len(df)
-            ok = len(df[df["Issue"] == "OK"])
-            flagged = len(df[df["Issue"] != "OK"])
-            pass_rate = round((ok / total * 100), 1) if total else 0
-
-            st.markdown(f'<div class="base-tag">🏢 {base_name}</div>', unsafe_allow_html=True)
-            st.markdown(f"""
-            <div class="metrics-row">
-                <div class="metric blue">
-                    <div class="m-label">Total Records</div>
-                    <div class="m-value">{total:,}</div>
-                    <div class="m-sub">Contact List</div>
-                </div>
-                <div class="metric green">
-                    <div class="m-label">✅ Passing</div>
-                    <div class="m-value">{ok:,}</div>
-                    <div class="m-sub">{pass_rate}% pass rate</div>
-                </div>
-                <div class="metric red">
-                    <div class="m-label">⚠️ Flagged</div>
-                    <div class="m-value">{flagged:,}</div>
-                    <div class="m-sub">Need attention</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            issue_counts = df[df["Issue"] != "OK"]["Issue"].value_counts().reset_index()
-            issue_counts.columns = ["Issue", "Count"]
-            if not issue_counts.empty:
-                st.markdown("**Issue Breakdown**")
-                st.bar_chart(issue_counts.set_index("Issue"), color="#1a2b4a")
-
-            flagged_df = df[df["Issue"] != "OK"]
-            if not flagged_df.empty:
-                st.markdown(f"**Flagged Records — {len(flagged_df)} total**")
-                st.dataframe(flagged_df, use_container_width=True, hide_index=True)
-
-            FIXABLE_ISSUES = {"Missing country code (+1)", "Has digits but wrong format"}
-            fixable_rows = []
-            for _, row in df[df["Issue"].isin(FIXABLE_ISSUES)].iterrows():
-                fixed = fix_phone_number(row["Current Value"])
-                if fixed:
-                    fixable_rows.append({
-                        "record_id": row["Record ID"],
-                        "Contact Full Name": row["Contact Full Name"],
-                        "Funeral Home": row["Funeral Home"],
-                        "Current Value": row["Current Value"],
-                        "Fixed Value": fixed,
-                        "Issue": row["Issue"],
-                    })
-
-            if fixable_rows:
-                fix_df = pd.DataFrame(fixable_rows)
-                applied_key = f"fix_applied_{base_id}"
-                if applied_key not in st.session_state:
-                    st.session_state[applied_key] = set()
-
-                pending = [r for r in fixable_rows
-                           if r["record_id"] not in st.session_state[applied_key]]
-                n_done = len(fixable_rows) - len(pending)
-
-                st.markdown(f"**🔧 {len(fix_df)} number(s) can be auto-fixed**")
-                st.dataframe(
-                    fix_df[["Contact Full Name", "Funeral Home", "Current Value", "Fixed Value", "Issue"]],
-                    use_container_width=True, hide_index=True
-                )
-
-                if n_done:
-                    st.success(f"✅ {n_done} of {len(fixable_rows)} record(s) fixed so far this session.")
-
-                if pending:
-                    confirmed = st.checkbox(
-                        f"I've reviewed the changes above and want to apply them to {base_name}",
-                        key=f"confirm_fix_{base_id}"
-                    )
-                    if confirmed:
-                        max_test = min(10, len(pending))
-                        test_n = int(st.number_input(
-                            f"How many records to patch first? (max 10 for a safe test run)",
-                            min_value=1, max_value=max_test, value=min(3, max_test),
-                            key=f"test_n_{base_id}"
-                        ))
-
-                        if n_done == 0:
-                            if st.button(f"🧪 Test fix ({test_n} record(s))", key=f"test_fix_{base_id}"):
-                                with st.spinner(f"Patching {test_n} record(s) in Airtable…"):
-                                    ok_count, errs = patch_phone_records(base_id, pending[:test_n])
-                                for r in pending[:ok_count]:
-                                    st.session_state[applied_key].add(r["record_id"])
-                                if errs:
-                                    st.warning(f"Fixed {ok_count}/{test_n}. ⚠️ {len(errs)} failed — try again.")
-                                else:
-                                    st.success(f"✅ Test passed — {ok_count} record(s) fixed. "
-                                               f"Check Airtable to confirm, then apply the rest below.")
-                                st.rerun()
-                        else:
-                            col1, col2 = st.columns(2)
-                            with col1:
-                                if st.button(f"🧪 Test another {test_n} record(s)",
-                                             key=f"test_fix_{base_id}"):
-                                    with st.spinner(f"Patching {test_n} record(s)…"):
-                                        ok_count, errs = patch_phone_records(base_id, pending[:test_n])
-                                    for r in pending[:ok_count]:
-                                        st.session_state[applied_key].add(r["record_id"])
-                                    if errs:
-                                        st.warning(f"Fixed {ok_count}/{test_n}. ⚠️ {len(errs)} failed.")
-                                    else:
-                                        st.success(f"✅ Fixed {ok_count} more. "
-                                                   f"{len(pending) - ok_count} remaining.")
-                                    st.rerun()
-                            with col2:
-                                if st.button(f"✅ Apply all {len(pending)} remaining",
-                                             key=f"apply_all_{base_id}"):
-                                    with st.spinner(f"Patching {len(pending)} record(s)…"):
-                                        ok_count, errs = patch_phone_records(base_id, pending)
-                                    for r in pending[:ok_count]:
-                                        st.session_state[applied_key].add(r["record_id"])
-                                    if errs:
-                                        st.warning(f"Fixed {ok_count}. ⚠️ {len(errs)} failed — re-run audit to retry.")
-                                    else:
-                                        st.success(f"✅ All done! Fixed {ok_count} records in {base_name}.")
-                                    st.rerun()
-                else:
-                    st.success(f"✅ All {len(fixable_rows)} numbers in {base_name} are fixed!")
-                    if st.button("🔄 Re-run audit to confirm", key=f"clear_{base_id}"):
-                        del st.session_state[f"phone_{base_id}"]
-                        del st.session_state[f"phone_name_{base_id}"]
-                        if applied_key in st.session_state:
-                            del st.session_state[applied_key]
-                        st.rerun()
-
-            elif flagged > 0:
-                st.info("ℹ️ No auto-fixable numbers found — all flagged records need manual review in Airtable.")
-            st.markdown("---")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    if any(f"phone_{b}" in st.session_state for b in BASE_IDS):
-        all_dfs = {
-            f"{st.session_state[f'phone_name_{b}']} - Issues": st.session_state[f"phone_{b}"][st.session_state[f"phone_{b}"]["Issue"] != "OK"]
-            for b in BASE_IDS if f"phone_{b}" in st.session_state
-        }
-        excel_buf = build_excel(all_dfs)
-        st.download_button("⬇️ Download Phone Audit Report (.xlsx)",
-                           excel_buf, "phone_audit_results.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-
-    # ── Message Audit ─────────────────────────────────────────────────────────
-    st.markdown("""
-    <div class="section-wrap">
-        <div class="section-head">
-            <div class="section-icon">💬</div>
-            <div class="section-head-text">
-                <h3>Step 2 — Message Content Audit</h3>
-                <p>Scans outbound messages for unfilled placeholders, empty content, and short messages</p>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    if run_messages:
-        for base_id in BASE_IDS:
-            with st.spinner(f"Fetching outbound messages from {base_id}..."):
-                base_name = get_base_name(base_id)
-                df = run_message_audit(base_id, base_name)
-                st.session_state[f"msg_{base_id}"] = df
-                st.session_state[f"msg_name_{base_id}"] = base_name
-        st.success("✅ Message audit complete for both bases!")
-
-    for base_id in BASE_IDS:
-        if f"msg_{base_id}" in st.session_state:
-            df = st.session_state[f"msg_{base_id}"]
-            base_name = st.session_state[f"msg_name_{base_id}"]
-
-            excl_test = st.checkbox(
-                "🔕 Exclude messages containing 'test'",
-                value=True,
-                key=f"excl_test_{base_id}"
-            )
-            df_view = (
-                df[~df["Content (first 200 chars)"].str.contains("test", case=False, na=False)]
-                if excl_test else df
-            )
-
-            total = len(df_view)
-            ok = len(df_view[df_view["Issue"] == "OK"])
-            flagged = len(df_view[df_view["Issue"] != "OK"])
-            pass_rate = round((ok / total * 100), 1) if total else 0
-
-            st.markdown(f'<div class="base-tag">🏢 {base_name}</div>', unsafe_allow_html=True)
-            st.markdown(f"""
-            <div class="metrics-row">
-                <div class="metric blue">
-                    <div class="m-label">Total Outbound</div>
-                    <div class="m-value">{total:,}</div>
-                    <div class="m-sub">Outbound messages</div>
-                </div>
-                <div class="metric green">
-                    <div class="m-label">✅ Passing</div>
-                    <div class="m-value">{ok:,}</div>
-                    <div class="m-sub">{pass_rate}% pass rate</div>
-                </div>
-                <div class="metric red">
-                    <div class="m-label">⚠️ Flagged</div>
-                    <div class="m-value">{flagged:,}</div>
-                    <div class="m-sub">Need attention</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-            issue_counts = df_view[df_view["Issue"] != "OK"]["Issue"].value_counts().reset_index()
-            issue_counts.columns = ["Issue", "Count"]
-            if not issue_counts.empty:
-                st.markdown("**Issue Breakdown**")
-                st.bar_chart(issue_counts.set_index("Issue"), color="#1a2b4a")
-
-            flagged_df = df_view[df_view["Issue"] != "OK"]
-            if not flagged_df.empty:
-                st.markdown(f"**Flagged Records — {len(flagged_df)} total**")
-                st.dataframe(flagged_df, use_container_width=True, hide_index=True)
-
-            ph_df = df_view[df_view["Issue"] == "Unfilled placeholder"].copy()
-            if not ph_df.empty:
-                ph_df["Bad Token(s)"] = ph_df["Content (first 200 chars)"].apply(extract_tokens)
-
-                all_tokens = Counter()
-                for content in ph_df["Content (first 200 chars)"]:
-                    for p in PLACEHOLDER_PATTERNS:
-                        for m in p.findall(str(content)):
-                            all_tokens[m] += 1
-
-                st.markdown("**📋 Unfilled Placeholder Breakdown**")
-                col1, col2 = st.columns([1, 2])
-                with col1:
-                    st.markdown("**Token frequency**")
-                    st.dataframe(
-                        pd.DataFrame(all_tokens.most_common(), columns=["Bad Token", "Times Sent"]),
-                        use_container_width=True, hide_index=True
-                    )
-                with col2:
-                    st.markdown(f"**{len(ph_df)} affected message(s)**")
-                    st.dataframe(
-                        ph_df[["Contact Full Name", "Funeral Home",
-                               "Bad Token(s)", "Content (first 200 chars)"]],
-                        use_container_width=True, hide_index=True
-                    )
-                st.info(
-                    "ℹ️ These messages were already sent with unfilled tokens. "
-                    "The contacts above may need a follow-up message. "
-                    "Fix the corresponding message templates to prevent future occurrences."
-                )
-            st.markdown("---")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    if any(f"msg_{b}" in st.session_state for b in BASE_IDS):
-        all_dfs = {
-            f"{st.session_state[f'msg_name_{b}']} - Issues": st.session_state[f"msg_{b}"][st.session_state[f"msg_{b}"]["Issue"] != "OK"]
-            for b in BASE_IDS if f"msg_{b}" in st.session_state
-        }
-        excel_buf = build_excel(all_dfs)
-        st.download_button("⬇️ Download Message Audit Report (.xlsx)",
-                           excel_buf, "messages_audit_results.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE — ZAPIER AUDIT
-# ═════════════════════════════════════════════════════════════════════════════
-elif page == "⚡  Zapier Audit":
-    st.markdown("""
-    <div class="section-wrap">
-        <div class="section-head">
-            <div class="section-icon">⚡</div>
-            <div class="section-head-text">
-                <h3>Zapier Automation Audit</h3>
-                <p>Detects failing zaps, high error rates, halted runs, and volume anomalies</p>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    zap_account_id  = _secret("ZAPIER_ACCOUNT_ID") or "22022304"
-    zap_session_sec = _secret("ZAPIER_SESSION")
-    zap_csrf_sec    = _secret("ZAPIER_CSRF")
-    creds_expired   = st.session_state.get("zap_creds_expired", False)
-    no_secrets      = not (zap_session_sec and zap_csrf_sec)
-
-    if creds_expired or no_secrets:
-        if creds_expired:
-            st.warning(
-                "⚠️ Your Zapier session has expired. "
-                "Paste fresh cookies below to continue."
-            )
-        else:
-            st.info("Zapier session credentials not found in secrets — enter them below.")
-
-        with st.expander("❓ How to get fresh cookies", expanded=creds_expired):
-            st.markdown("""
-            1. Log into [zapier.com](https://zapier.com) in Chrome
-            2. Open DevTools (`F12`) → **Application** → **Cookies** → `zapier.com`
-            3. Copy the value of `zapsession` → paste as **Session Token**
-            4. Copy the value of `csrftoken` → paste as **CSRF Token**
-
-            Cookies expire every 1–4 weeks.
-            """)
-        zap_session = st.text_input("Session Token (zapsession cookie)", type="password", key="zap_session_input")
-        zap_csrf    = st.text_input("CSRF Token (csrftoken cookie)",     type="password", key="zap_csrf_input")
-    else:
-        zap_session = zap_session_sec
-        zap_csrf    = zap_csrf_sec
-        st.success("✅ Zapier credentials loaded from secrets.")
-
-    col_date, col_btn = st.columns([3, 1])
-    with col_date:
-        today     = datetime.date.today()
-        yesterday = today - datetime.timedelta(days=1)
-        date_range = st.date_input(
-            "Date Range",
-            value=(yesterday, today),
-            max_value=today,
-            key="zap_audit_date_picker",
-            help="Select a start and end date. Single day = click the same date twice."
-        )
-    with col_btn:
-        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
-        run_zap_audit = st.button("⚡ Run Zapier Audit", use_container_width=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    if run_zap_audit:
-        if not zap_account_id:
-            st.error("❌ ZAPIER_ACCOUNT_ID not found in Streamlit secrets.")
-        elif not (zap_session and zap_csrf):
-            st.error("Please enter your Zapier session credentials above.")
-        elif not isinstance(date_range, (list, tuple)) or len(date_range) != 2:
-            st.error("Please select both a start and end date.")
-        else:
-            start_str = date_range[0].strftime("%Y-%m-%d")
-            end_str   = date_range[1].strftime("%Y-%m-%d")
-            label     = start_str if start_str == end_str else f"{start_str} → {end_str}"
-            with st.spinner(f"Fetching Zapier run history for {label}…"):
-                try:
-                    runs = fetch_zap_runs_for_range(
-                        zap_session, zap_csrf, zap_account_id, start_str, end_str
-                    )
-                    summaries = build_zap_summaries(runs)
-                    flags     = detect_zap_flags(summaries)
-                    st.session_state["zap_runs"]       = runs
-                    st.session_state["zap_summaries"]  = summaries
-                    st.session_state["zap_flags"]       = flags
-                    st.session_state["zap_audit_label"] = label
-                    st.session_state["zap_creds_expired"] = False
-                    st.success(f"✅ Fetched {len(runs):,} runs across {len(summaries)} zap(s).")
-                except requests.exceptions.HTTPError as e:
-                    if e.response is not None and e.response.status_code in (401, 403):
-                        st.session_state["zap_creds_expired"] = True
-                        st.rerun()
-                    else:
-                        st.error(f"❌ HTTP error: {e}")
-                except Exception as e:
-                    st.error(f"❌ Error: {e}")
-
-    if "zap_summaries" in st.session_state and st.session_state["zap_summaries"]:
-        summaries  = st.session_state["zap_summaries"]
-        flags      = st.session_state["zap_flags"]
-        audit_label = st.session_state.get("zap_audit_label", "")
-
-        total_runs    = sum(z["Total Runs"] for z in summaries)
-        total_errors  = sum(z["Errors"]     for z in summaries)
-        total_success = sum(z["Success"]    for z in summaries)
-        n_critical    = sum(1 for f in flags if "Critical" in f["Severity"])
-        n_warnings    = sum(1 for f in flags if "Warning"  in f["Severity"])
-        overall_rate  = round(total_success / total_runs * 100, 1) if total_runs else 0
-
-        crit_cls = "red" if n_critical > 0 else "green"
-        warn_cls = "red" if n_warnings > 0 else "green"
-        rate_cls = "green" if overall_rate >= 90 else "red"
-
-        st.markdown(f"""
-        <div class="metrics-row">
-            <div class="metric blue">
-                <div class="m-label">Zaps Active</div>
-                <div class="m-value">{len(summaries)}</div>
-                <div class="m-sub">{audit_label}</div>
-            </div>
-            <div class="metric blue">
-                <div class="m-label">Total Runs</div>
-                <div class="m-value">{total_runs:,}</div>
-                <div class="m-sub">all zaps</div>
-            </div>
-            <div class="metric {crit_cls}">
-                <div class="m-label">🔴 Critical</div>
-                <div class="m-value">{n_critical}</div>
-                <div class="m-sub">flags</div>
-            </div>
-            <div class="metric {warn_cls}">
-                <div class="m-label">⚠️ Warnings</div>
-                <div class="m-value">{n_warnings}</div>
-                <div class="m-sub">flags</div>
-            </div>
-            <div class="metric {rate_cls}">
-                <div class="m-label">Success Rate</div>
-                <div class="m-value">{overall_rate}%</div>
-                <div class="m-sub">overall</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        status_cols = ["Success", "Errors", "Halted", "Filtered", "Throttled", "Other"]
-        status_totals = {s: sum(z[s] for z in summaries) for s in status_cols}
-        chart_df = pd.DataFrame([
-            {"Status": k, "Count": v} for k, v in status_totals.items() if v > 0
-        ])
-        if not chart_df.empty:
-            st.markdown("**Run Status Breakdown**")
-            st.bar_chart(chart_df.set_index("Status"), color="#1a2b4a")
-
-        st.markdown("---")
-        if flags:
-            st.markdown(f"**🚩 {len(flags)} Flag(s) Detected — sorted by severity**")
-            flags_df = pd.DataFrame(flags).sort_values(
-                "Severity",
-                key=lambda s: s.map({"🔴 Critical": 0, "⚠️ Warning": 1}).fillna(2)
-            )
-            st.dataframe(flags_df, use_container_width=True, hide_index=True)
-        else:
-            st.success("✅ No flags detected — all zaps are running cleanly!")
-
-        st.markdown("---")
-        st.markdown("**Zap-by-Zap Breakdown**")
-        display_cols = ["Zap Title", "Total Runs", "Success", "Errors",
-                        "Halted", "Filtered", "Throttled", "Error Rate", "Success Rate"]
-        summary_df = (
-            pd.DataFrame([{k: v for k, v in z.items() if not k.startswith("_")} for z in summaries])
-            [display_cols]
-            .sort_values("Errors", ascending=False)
-        )
-        st.dataframe(summary_df, use_container_width=True, hide_index=True)
-
-        zap_export_df = summary_df.copy()
-        zap_excel = build_excel({"Zapier Run Summary": zap_export_df})
-        if flags:
-            flags_export = pd.DataFrame(flags)
-            zap_excel = build_excel({
-                "Flags": flags_export,
-                "Zap Summary": zap_export_df,
-            })
-        st.download_button(
-            "⬇️ Download Zapier Audit Report (.xlsx)",
-            zap_excel,
-            f"zapier_audit_{audit_label}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE — TASK TRACKER
-# ═════════════════════════════════════════════════════════════════════════════
-elif page == "✅  Tasks":
-    _tasks   = load_tasks()
-    _today   = date.today()
-    _today_s = _today.isoformat()
-    _active  = [t for t in _tasks if t.get("status") != "done"]
-    _done_td = [t for t in _tasks if t.get("status") == "done" and t.get("completed_at","")[:10] == _today_s]
-    _overdue = [t for t in _tasks if _is_overdue(t)]
-    _p1_open = [t for t in _tasks if t.get("priority") == "P1" and t.get("status") != "done"]
-
-    st.markdown("""
-    <div class="section-head" style="margin-bottom:20px;">
-        <div class="section-icon">✅</div>
-        <div class="section-head-text">
-            <h3>Task Tracker</h3>
-            <p>Stored in Airtable — tasks persist across sessions. Use the sidebar to add tasks.</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Metrics ───────────────────────────────────────────────────────────────
-    mc1, mc2, mc3, mc4 = st.columns(4)
-    mc1.metric("Total Active", len(_active),  help="All non-done tasks")
-    mc2.metric("Done Today",   len(_done_td), help="Completed today")
-    mc3.metric("Overdue",      len(_overdue), help="One-off tasks past due date")
-    mc4.metric("P1 Items",     len(_p1_open), help="High-priority open tasks")
-
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-
-    # ── Quick-add ─────────────────────────────────────────────────────────────
-    _qv = st.text_input(
-        "quick_add", placeholder="⚡ Quick-add a task — type and press Enter",
-        key="quick_capture", label_visibility="collapsed"
-    )
-    if _qv and _qv != st.session_state.get("_last_quick", ""):
-        st.session_state["_last_quick"] = _qv
-        try:
-            add_task({"title": _qv.strip(), "type": "one-off", "priority": "P2"})
-        except Exception as _e:
-            st.error(f"❌ Could not save task: {_e}")
-        st.rerun()
-
-    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-
-    # ── Date filter ───────────────────────────────────────────────────────────
-    st.markdown("**📅 View tasks for:**")
-    _df_c1, _df_c2, _df_c3, _df_c4, _df_c5 = st.columns([1,1,1,1,2])
-    _view_date = st.session_state.get("task_view_date", _today)
-
-    with _df_c1:
-        if st.button("Today", use_container_width=True, key="btn_today"):
-            st.session_state["task_view_date"] = _today
-            st.rerun()
-    with _df_c2:
-        if st.button("Yesterday", use_container_width=True, key="btn_yesterday"):
-            st.session_state["task_view_date"] = _today - timedelta(days=1)
-            st.rerun()
-    with _df_c3:
-        if st.button("This Week", use_container_width=True, key="btn_week"):
-            st.session_state["task_view_date"] = _today
-            st.rerun()
-    with _df_c4:
-        if st.button("This Month", use_container_width=True, key="btn_month"):
-            st.session_state["task_view_date"] = _today
-            st.rerun()
-    with _df_c5:
-        _picked = st.date_input(
-            "Pick a date", value=_view_date, key="task_date_picker",
-            label_visibility="collapsed"
-        )
-        if _picked != _view_date:
-            st.session_state["task_view_date"] = _picked
-            st.rerun()
-
-    _view_date = st.session_state.get("task_view_date", _today)
-
-    # ── Filter label ──────────────────────────────────────────────────────────
-    _vd_monday = _view_date - timedelta(days=_view_date.weekday())
-    _vd_sunday = _vd_monday + timedelta(days=6)
-    _date_label = (
-        "Today" if _view_date == _today
-        else f"Week of {_vd_monday.strftime('%b %-d')} – {_vd_sunday.strftime('%b %-d')}"
-        if st.session_state.get("_week_mode")
-        else _view_date.strftime("%A, %B %-d %Y")
-    )
+    n_done    = sum(1 for t in filtered if t.get("status") == "done")
+    n_overdue = sum(1 for t in filtered if _is_overdue(t))
+    ov_badge  = (f' &nbsp;<span style="color:#e05252;font-weight:600;">⚠️ {n_overdue} overdue</span>'
+                 if n_overdue else "")
     st.markdown(
-        f"<div style='font-size:13px;color:#4a5568;margin:8px 0 4px 0;'>"
-        f"Showing tasks for <strong style='color:#1a2b4a;'>{_view_date.strftime('%A, %B %-d, %Y')}</strong></div>",
-        unsafe_allow_html=True
+        f'<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding-bottom:8px;'
+        f'border-bottom:1px solid #e4e7ef;">'
+        f'<strong style="color:#1a2b4a;">{len(filtered)}</strong> tasks &nbsp;·&nbsp; '
+        f'<span style="color:#1a9e5c;font-weight:600;">✅ {n_done} done</span>{ov_badge}'
+        f'</div>',
+        unsafe_allow_html=True,
     )
+    for t in filtered:
+        _render_task_row(t, tab_id=filter_type)
 
-    # ── Determine which tasks are relevant for _view_date ─────────────────────
-    def _task_visible(task, view_date):
-        task_type = task.get("type", "one-off")
-        # Parse created_at
-        raw_created = task.get("created_at", "")
-        try:
-            created_date = datetime.fromisoformat(raw_created).date() if raw_created else date.min
-        except Exception:
-            created_date = date.min
-        if created_date > view_date:
-            return False  # Task didn't exist on this date
 
-        if task_type == "daily":
-            return True
-        elif task_type == "weekly":
-            # Show for any day in the same Mon–Sun week
-            view_monday = view_date - timedelta(days=view_date.weekday())
-            task_monday = created_date - timedelta(days=created_date.weekday())
-            return view_monday >= task_monday
-        elif task_type == "monthly":
-            # Show for any day in any month since creation
-            return (view_date.year, view_date.month) >= (created_date.year, created_date.month)
-        elif task_type == "one-off":
-            due = task.get("due_date")
-            if not due:
-                return True  # No due date → always show
-            try:
-                return date.fromisoformat(str(due)) == view_date
-            except Exception:
-                return True
-        return True
+with tab_tasks:
+    tasks = load_tasks()
+    today_str = date.today().isoformat()
 
-    # ── Type filter tabs ──────────────────────────────────────────────────────
-    _type_tabs = st.tabs(["All", "Daily", "Weekly", "Monthly", "One-Off"])
-    _type_keys = ["all", "daily", "weekly", "monthly", "one-off"]
+    # ── Summary metrics ───────────────────────────────────────────────────
+    active_tasks  = [t for t in tasks if t.get("status") != "done"]
+    done_today    = [t for t in tasks if t.get("status") == "done"
+                     and (t.get("completed_at") or "")[:10] == today_str]
+    overdue_tasks = [t for t in tasks if _is_overdue(t)]
+    p1_open       = [t for t in tasks if t.get("priority") == "P1" and t.get("status") != "done"]
 
-    for _tab, _tkey in zip(_type_tabs, _type_keys):
-        with _tab:
-            if _tkey == "all":
-                _visible = [t for t in _tasks if _task_visible(t, _view_date)]
-            else:
-                _visible = [t for t in _tasks if t.get("type") == _tkey and _task_visible(t, _view_date)]
-
-            if not _visible:
-                st.markdown(
-                    "<div style='padding:24px 0;text-align:center;color:#9aa5b4;font-size:14px;'>"
-                    "No tasks for this date — add one using the sidebar.</div>",
-                    unsafe_allow_html=True
-                )
-            else:
-                _pri_ord    = {"P1": 0, "P2": 1, "P3": 2}
-                _status_ord = {"todo": 0, "in-progress": 1, "done": 2}
-                _visible    = sorted(
-                    _visible,
-                    key=lambda t: (
-                        _status_ord.get(t.get("status", "todo"), 0),
-                        _pri_ord.get(t.get("priority", "P3"), 2),
-                    )
-                )
-                _n_done    = sum(1 for t in _visible if t.get("status") == "done")
-                _n_overdue = sum(1 for t in _visible if _is_overdue(t))
-                _ov_badge  = (
-                    f' &nbsp;<span style="color:#e05252;font-weight:600;">⚠️ {_n_overdue} overdue</span>'
-                    if _n_overdue else ""
-                )
-                st.markdown(
-                    f'<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding-bottom:8px;'
-                    f'border-bottom:1px solid #e4e7ef;">'
-                    f'<strong style="color:#1a2b4a;">{len(_visible)}</strong> tasks &nbsp;·&nbsp; '
-                    f'<span style="color:#1a9e5c;font-weight:600;">✅ {_n_done} done</span>{_ov_badge}</div>',
-                    unsafe_allow_html=True
-                )
-                for _t in _visible:
-                    _render_task_row(_t, kp=f"{_tkey}_")
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE — HISTORY
-# ═════════════════════════════════════════════════════════════════════════════
-elif page == "📊  History":
-    _tasks = load_tasks()
-    _completed = [t for t in _tasks if t.get("status") == "done"]
-
-    st.markdown("""
-    <div class="section-head" style="margin-bottom:20px;">
-        <div class="section-icon">📊</div>
-        <div class="section-head-text">
-            <h3>Completed Tasks</h3>
-            <p>All tasks marked done — recurring tasks reset automatically on their schedule</p>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Summary metrics ───────────────────────────────────────────────────────
-    _c_daily   = [t for t in _completed if t.get("type") == "daily"]
-    _c_weekly  = [t for t in _completed if t.get("type") == "weekly"]
-    _c_monthly = [t for t in _completed if t.get("type") == "monthly"]
-    _c_oneoff  = [t for t in _completed if t.get("type") == "one-off"]
-
-    hc1, hc2, hc3, hc4, hc5 = st.columns(5)
-    hc1.metric("Total Done",  len(_completed))
-    hc2.metric("Daily",       len(_c_daily))
-    hc3.metric("Weekly",      len(_c_weekly))
-    hc4.metric("Monthly",     len(_c_monthly))
-    hc5.metric("One-Off",     len(_c_oneoff))
-
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-
-    # ── Filter ────────────────────────────────────────────────────────────────
-    _hfilter_map = {
-        "All Types": "all",
-        "Daily": "daily",
-        "Weekly": "weekly",
-        "Monthly": "monthly",
-        "One-Off": "one-off",
-    }
-    _hfilter_label = st.selectbox(
-        "Filter by type",
-        list(_hfilter_map.keys()),
-        key="history_filter",
-        label_visibility="collapsed",
-    )
-    _hfilter = _hfilter_map[_hfilter_label]
-    _view = _completed if _hfilter == "all" else [t for t in _completed if t.get("type") == _hfilter]
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Total Active", len(active_tasks),  help="All non-done tasks")
+    mc2.metric("Done Today",   len(done_today),     help="Completed today")
+    mc3.metric("Overdue",      len(overdue_tasks),  help="One-off tasks past due date")
+    mc4.metric("P1 Items",     len(p1_open),        help="High-priority open tasks")
 
     st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
-    # ── Task list ─────────────────────────────────────────────────────────────
-    st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+    # ── Quick Capture ─────────────────────────────────────────────────────
+    _qv = st.text_input("⚡ Quick add a task…", placeholder="Type and press Enter",
+                        key="quick_capture", label_visibility="collapsed")
+    if _qv and _qv != st.session_state.get("_last_quick", ""):
+        st.session_state["_last_quick"] = _qv
+        add_task({"title": _qv.strip(), "type": "one-off", "priority": "P2"})
+        st.rerun()
 
-    if not _view:
-        st.markdown("<div style='padding:32px 0; text-align:center; color:#9aa5b4; font-size:14px;'>No completed tasks in this category yet.</div>", unsafe_allow_html=True)
-    else:
-        _pri_ord = {"P1": 0, "P2": 1, "P3": 2}
-        _view = sorted(_view, key=lambda t: (t.get("completed_at") or ""), reverse=True)
+    # ── Manage Team ───────────────────────────────────────────────────────
+    with st.expander("👥 Manage Team", expanded=False):
+        _all_members = load_members()
+        st.caption("People available for assignment. Inactive members won't appear in the dropdowns but stay on past tasks.")
 
-        st.markdown(f'<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #e4e7ef;"><strong style="color:#1a2b4a;">{len(_view)}</strong> completed task{"s" if len(_view) != 1 else ""} — most recent first</div>', unsafe_allow_html=True)
+        with st.form("add_member_form", clear_on_submit=True):
+            mc_a, mc_b, mc_c, mc_d = st.columns([2, 2, 2, 1])
+            with mc_a: _mn = st.text_input("Name *", placeholder="Full name")
+            with mc_b: _me = st.text_input("Email", placeholder="name@example.com")
+            with mc_c: _mr = st.text_input("Role", placeholder="Designer, PM…")
+            with mc_d:
+                st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+                _madd = st.form_submit_button("➕ Add", use_container_width=True)
+        if _madd:
+            if _mn.strip():
+                add_member({"name": _mn.strip(), "email": _me.strip(), "role": _mr.strip()})
+                st.rerun()
+            else:
+                st.warning("Name is required.")
 
-        for t in _view:
-            tid = t["id"]
-            completed_at = t.get("completed_at", "")
-            completed_label = ""
-            if completed_at:
-                try:
-                    completed_label = datetime.fromisoformat(completed_at).strftime("%-d %b %Y, %-I:%M %p")
-                except Exception:
-                    try:
-                        completed_label = datetime.fromisoformat(completed_at).strftime("%d %b %Y")
-                    except Exception:
-                        completed_label = completed_at[:10]
+        if _all_members:
+            for _m in _all_members:
+                m_a, m_b, m_c, m_d, m_e = st.columns([2, 2, 2, 1, 1])
+                m_a.markdown(f"**{_m['name']}**" + ("" if _m["active"] else " *(inactive)*"))
+                m_b.markdown(f"<span style='color:#666;font-size:12px;'>{_m.get('email','—') or '—'}</span>", unsafe_allow_html=True)
+                m_c.markdown(f"<span style='color:#666;font-size:12px;'>{_m.get('role','—') or '—'}</span>", unsafe_allow_html=True)
+                with m_d:
+                    if st.button(("Deactivate" if _m["active"] else "Activate"), key=f"toggle_{_m['id']}", use_container_width=True):
+                        update_member(_m["id"], {"active": not _m["active"]})
+                        st.rerun()
+                with m_e:
+                    if st.button("🗑️", key=f"del_member_{_m['id']}", use_container_width=True):
+                        delete_member(_m["id"])
+                        st.rerun()
+        else:
+            st.info("No team members yet. Add one above.")
 
-            h_info, h_meta, h_reopen = st.columns([0.62, 0.28, 0.10])
-
-            with h_info:
-                desc_html = f'<div class="task-desc">{t["description"]}</div>' if t.get("description") else ""
-                st.markdown(
-                    f'<div class="task-title-done">{_priority_pill(t.get("priority","P3"))} {t["title"]}</div>{desc_html}',
-                    unsafe_allow_html=True
-                )
-
-            with h_meta:
-                type_badge = f'<span class="type-badge">{t.get("type","one-off")}</span>'
-                date_str = f'<span style="font-size:11px;color:#9aa5b4;margin-left:6px;">✅ {completed_label}</span>' if completed_label else ""
-                st.markdown(f'<div style="margin-top:6px;">{type_badge}{date_str}</div>', unsafe_allow_html=True)
-
-            with h_reopen:
-                if st.button("↩️", key=f"reopen_{tid}", help="Re-open task"):
-                    update_task(tid, {"status": "todo"})
-                    st.rerun()
-
-            st.markdown("<hr style='margin:4px 0; border-color:#f0f2f7;'>", unsafe_allow_html=True)
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # ── Recurrence info ───────────────────────────────────────────────────────
-    with st.expander("ℹ️ How recurring tasks work"):
-        st.markdown("""
-        | Type | Resets when |
-        |------|------------|
-        | **Daily** | Every new day |
-        | **Weekly** | Every Monday |
-        | **Monthly** | 1st of each month |
-        | **One-Off** | Never — stays done permanently |
-
-        When a recurring task is reset, it moves back to the active Tasks view as **To Do**.
-        Completing it again will show it here until the next reset.
-        """)
-
-# ═════════════════════════════════════════════════════════════════════════════
-# PAGE — SMART INBOX
-# ═════════════════════════════════════════════════════════════════════════════
-elif page == "🤖  Smart Inbox":
-    inbox_scanner.render_inbox_page(
-        refresh_interval=st.session_state.get("inbox_refresh_interval", 10)
+    # ── Task Board tabs ───────────────────────────────────────────────────
+    tb_all, tb_daily, tb_weekly, tb_monthly, tb_oneoff = st.tabs(
+        ["All", "Daily", "Weekly", "Monthly", "One-Off"]
     )
-
-# ── Footer ────────────────────────────────────────────────────────────────────
-st.markdown("""
-<div style="text-align:center; padding: 32px 0 16px 0;">
-    <img src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo.png" style="height:22px; opacity:0.4;" />
-    <div style="font-size:11px; color:#b0b8c8; margin-top:8px;">Aftercare Operations Audit Tool · Internal Use Only</div>
-</div>
-""", unsafe_allow_html=True)
+    with tb_all:
+        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+        _render_task_tab("all", tasks)
+        st.markdown("</div>", unsafe_allow_html=True)
+    with tb_daily:
+        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+        _render_task_tab("daily", tasks)
+        st.markdown("</div>", unsafe_allow_html=True)
+    with tb_weekly:
+        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+        _render_task_tab("weekly", tasks)
+        st.markdown("</div>", unsafe_allow_html=True)
+    with tb_monthly:
+        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+        _render_task_tab("monthly", tasks)
+        st.markdown("</div>", unsafe_allow_html=True)
+    with tb_oneoff:
+        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+        _render_task_tab("one-off", tasks)
+        st.markdown("</div>", unsafe_allow_html=True)

@@ -10,7 +10,7 @@ from pathlib import Path
 from queue import Queue
 from threading import Thread
 
-ONBOARDING_DIR = Path(__file__).parent.parent / "Airtable Audit" / "onboarding-automation"
+ONBOARDING_DIR = Path(__file__).parent / "onboarding-automation"
 
 class OnboardingAutomation:
     def __init__(self):
@@ -38,7 +38,7 @@ class OnboardingAutomation:
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                text=True,
+                encoding="utf-8",
                 bufsize=1,
                 cwd=str(ONBOARDING_DIR),
                 env=env

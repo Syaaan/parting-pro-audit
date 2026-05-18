@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.backup
+
+# Node.js automation (contains hardcoded API keys — runs locally only)
+onboarding-automation/
+
+# Streamlit secrets (keep the example, not the real one)
+.streamlit/secrets.toml
+
+# Claude Code internal
+.claude/
+
+# Test/scratch files
+_*.txt
+*.bat
