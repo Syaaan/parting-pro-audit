@@ -1437,15 +1437,29 @@ st.warning(
     "Each step makes live changes in Airtable, Twilio, and Zapier."
 )
 
+# Build display list: skip Step 6 (QA/inactive), renumber Step 7 → display 6
+_display_steps = []
+_disp_num = 1
+for s in STEPS:
+    if s["key"] == "6":
+        continue
+    _display_steps.append({**s, "display_num": str(_disp_num)})
+    _disp_num += 1
+# Map display label → actual Node.js step key
+_step_option_map = {
+    f"{s['emoji']} Step {s['display_num']} – {s['title']}": s["key"]
+    for s in _display_steps
+}
+
 col_step, col_action = st.columns([3, 1])
 
 with col_step:
     selected_step = st.selectbox(
         "Select Onboarding Step",
-        options=[f"{s['emoji']} Step {s['key']} – {s['title']}" for s in STEPS],
+        options=list(_step_option_map.keys()),
         help="Choose which onboarding step to run for the current funeral home"
     )
-    step_key = selected_step.split(" ")[2]
+    step_key = _step_option_map[selected_step]  # actual key sent to Node.js
 
     # Show description for the selected step
     step_meta = next((s for s in STEPS if s["key"] == step_key), None)
@@ -1629,22 +1643,15 @@ else:
     st.markdown("#### 🗂️ Step Overview")
     st.caption("Run steps in order for each new funeral home. Click a step number in the dropdown above to select it, then press **▶️ Start Step**.")
 
-    for step in STEPS:
-        inactive = step["key"] == "6"  # QA step is currently inactive
-        border_color = "#94a3b8" if inactive else "#3b82f6"
-        bg_color = "#f1f5f9" if inactive else "#eff6ff"
-        title_color = "#64748b" if inactive else "#1e40af"
-        desc_color = "#94a3b8" if inactive else "#3b82f6"
-        badge = (" <span style='font-size:11px;background:#e2e8f0;color:#64748b;"
-                 "padding:2px 8px;border-radius:10px;font-weight:500'>inactive</span>") if inactive else ""
+    for step in _display_steps:
         st.markdown(
             f"<div style='display:flex;align-items:center;gap:14px;padding:10px 16px;"
-            f"border-left:4px solid {border_color};background:{bg_color};"
+            f"border-left:4px solid #3b82f6;background:#eff6ff;"
             f"border-radius:6px;margin-bottom:8px;'>"
             f"<span style='font-size:22px;min-width:28px'>{step['emoji']}</span>"
             f"<div>"
-            f"<strong style='color:{title_color};font-size:14px'>Step {step['key']}: {step['title']}</strong>{badge}<br>"
-            f"<span style='font-size:12px;color:{desc_color}'>{step['description']}</span>"
+            f"<strong style='color:#1e40af;font-size:14px'>Step {step['display_num']}: {step['title']}</strong><br>"
+            f"<span style='font-size:12px;color:#3b82f6'>{step['description']}</span>"
             f"</div></div>",
             unsafe_allow_html=True
         )
