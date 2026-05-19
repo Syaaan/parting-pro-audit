@@ -1,223 +1,271 @@
+"""Task store backed by Airtable (base appTv7HOVgk2hBEBG).
+
+Public API (drop-in replacement for the previous JSON-file version):
+  load_tasks() -> list[dict]
+  add_task(data: dict) -> dict
+  update_task(task_id: str, updates: dict)
+  delete_task(task_id: str)
+  reset_recurring_tasks()
+
+New API (team / assignment support):
+  load_members(active_only: bool = False) -> list[dict]
+  add_member(data: dict) -> dict
+  update_member(member_id: str, updates: dict)
+  delete_member(member_id: str)
 """
-task_store.py — Persistent task storage backed by Airtable.
-Falls back to local JSON only if Airtable is not reachable.
-"""
-import json
-import uuid
+
+from __future__ import annotations
+
+import os
 import requests
-import streamlit as st
 from datetime import date, datetime, timedelta
-from pathlib import Path
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-# Use table ID directly so it works regardless of the table's display name
-TASKS_TABLE      = "tblaF1j6oS9s9IAUz"
-_DEFAULT_BASE_ID = "appTv7HOVgk2hBEBG"
-_LOCAL_FILE      = Path(__file__).parent / "tasks.json"
+try:
+    import streamlit as st
+    _HAS_ST = True
+except Exception:
+    st = None
+    _HAS_ST = False
 
-# ── Secrets ───────────────────────────────────────────────────────────────────
-def _secret(key, default=""):
-    try:
-        return st.secrets[key]
-    except Exception:
-        return default
 
-def _token():
-    return _secret("AIRTABLE_TOKEN")
+BASE_ID = "appTv7HOVgk2hBEBG"
+TASKS_TABLE = "tblaF1j6oS9s9IAUz"
+MEMBERS_TABLE = "tblpNgRJHUe9vV4G8"
 
-def _base_id():
-    return _secret("TASKS_BASE_ID") or _DEFAULT_BASE_ID
+TYPE_NAME = {
+    "daily":   "daily ",
+    "weekly":  "weekly ",
+    "monthly": "monthly ",
+    "one-off": "one-off",
+}
+TYPE_FROM_NAME = {v: k for k, v in TYPE_NAME.items()}
+# Map Python statuses ("todo" / "done") to the Airtable single-select option names.
+# The Airtable Status field has been expanded beyond two states, but we keep the
+# Streamlit app's two-state view ("not done" vs "done"):
+#   - Writes from Streamlit: "todo" -> "to do",  "done" -> "completed"
+#   - Reads from Airtable: any non-"completed" status is treated as "todo".
+STATUS_NAME = {"todo": "to do", "done": "completed"}
+STATUS_FROM_NAME = {
+    "to do":      "todo",
+    "completed":  "done",
+    # Other Airtable workflow states show up as "todo" (not done) on the Streamlit side
+    "new":        "todo",
+    "inprogress": "todo",
+    "waiting for something / doc / file / reply": "todo",
+    # Legacy values (just in case any old records linger)
+    "todo ":      "todo",
+    "done":       "done",
+}
+
+_AIRTABLE = "https://api.airtable.com/v0"
+
+_LEGACY_TOKEN = (
+    "patm2acj3jyDwBfyD."
+    "3fb175e7596542e2a9be3acc07700272cf8cb09028c58cc03a6d8bc5be022542"
+)
+
+
+def _get_token():
+    if _HAS_ST:
+        try:
+            tok = st.secrets.get("AIRTABLE_TOKEN")
+            if tok:
+                return tok
+        except Exception:
+            pass
+    env = os.environ.get("AIRTABLE_TOKEN")
+    if env:
+        return env
+    return _LEGACY_TOKEN
+
 
 def _headers():
     return {
-        "Authorization": f"Bearer {_token()}",
-        "Content-Type":  "application/json",
+        "Authorization": "Bearer " + _get_token(),
+        "Content-Type": "application/json",
     }
 
-def _table_url():
-    return (
-        f"https://api.airtable.com/v0/{_base_id()}/"
-        f"{requests.utils.quote(TASKS_TABLE)}"
-    )
 
-def _use_airtable():
-    return bool(_token())
+def _request(method, url, **kwargs):
+    r = requests.request(method, url, headers=_headers(), timeout=30, **kwargs)
+    if r.status_code >= 400:
+        try:
+            err = r.json()
+        except Exception:
+            err = {"error": r.text}
+        if isinstance(err.get("error"), dict):
+            msg = err["error"].get("message") or err["error"].get("type") or str(err)
+        else:
+            msg = err.get("error") or str(err)
+        raise RuntimeError("Airtable " + method + " -> " + str(r.status_code) + ": " + str(msg))
+    if r.status_code == 204 or not r.content:
+        return {}
+    return r.json()
 
-# ── Airtable ↔ task dict ──────────────────────────────────────────────────────
-def _rec_to_task(rec: dict) -> dict:
+
+def _list_all(table_id):
+    records = []
+    offset = None
+    while True:
+        params = {"pageSize": 100}
+        if offset:
+            params["offset"] = offset
+        data = _request("GET", _AIRTABLE + "/" + BASE_ID + "/" + table_id, params=params)
+        records.extend(data.get("records", []))
+        offset = data.get("offset")
+        if not offset:
+            break
+    return records
+
+
+if _HAS_ST:
+    @st.cache_data(ttl=15, show_spinner=False)
+    def _fetch_tasks_raw():
+        return _list_all(TASKS_TABLE)
+
+    @st.cache_data(ttl=15, show_spinner=False)
+    def _fetch_members_raw():
+        return _list_all(MEMBERS_TABLE)
+
+    def _invalidate_tasks_cache():
+        _fetch_tasks_raw.clear()
+
+    def _invalidate_members_cache():
+        _fetch_members_raw.clear()
+else:
+    def _fetch_tasks_raw():
+        return _list_all(TASKS_TABLE)
+
+    def _fetch_members_raw():
+        return _list_all(MEMBERS_TABLE)
+
+    def _invalidate_tasks_cache():
+        pass
+
+    def _invalidate_members_cache():
+        pass
+
+
+def _parse_task(rec):
     f = rec.get("fields", {})
     return {
-        "id":                    rec["id"],
-        "title":                 f.get("Title", ""),
-        "description":           f.get("Description", ""),
-        "type":                  f.get("Type", "one-off"),
-        "priority":              f.get("Priority", "P2"),
-        "status":                f.get("Status", "todo"),
-        "source":                f.get("Source", "manual"),
-        "due_date":              f.get("Due Date") or None,
-        "created_at":            f.get("Created At", ""),
-        "completed_at":          f.get("Completed At") or None,
-        "recurrence_last_reset": f.get("Recurrence Last Reset") or date.today().isoformat(),
+        "id": rec["id"],
+        "title": f.get("Title", ""),
+        "description": f.get("Description", ""),
+        "type": TYPE_FROM_NAME.get(f.get("Type", ""), "one-off"),
+        "priority": f.get("Priority", "P2"),
+        "status": STATUS_FROM_NAME.get(f.get("Status", ""), "todo"),
+        "source": f.get("Source", "manual"),
+        "due_date": f.get("Due Date") or None,
+        "created_at": f.get("Created At") or rec.get("createdTime"),
+        "completed_at": f.get("Completed At") or None,
+        "recurrence_last_reset": f.get("Recurrence Last Reset") or None,
+        "assignee_ids": f.get("Assigned To", []) or [],
     }
 
-def _fields_from(data: dict) -> dict:
-    fields = {
-        "Title":    data.get("title", "Untitled"),
-        "Type":     data.get("type",     "one-off"),
-        "Priority": data.get("priority", "P2"),
-        "Status":   data.get("status",   "todo"),
-        "Source":   data.get("source",   "manual"),
-    }
-    for py_key, at_key in [
-        ("description",           "Description"),
-        ("due_date",              "Due Date"),
-        ("created_at",            "Created At"),
-        ("completed_at",          "Completed At"),
-        ("recurrence_last_reset", "Recurrence Last Reset"),
-    ]:
-        val = data.get(py_key)
-        if val is not None:
-            fields[at_key] = str(val)
-    return fields
 
-# ── Auto-create Tasks table ───────────────────────────────────────────────────
-def _create_tasks_table() -> bool:
-    """Attempt to create the Tasks table via Airtable Meta API. Returns True on success."""
-    url = f"https://api.airtable.com/v0/meta/bases/{_base_id()}/tables"
-    payload = {
-        "name": TASKS_TABLE,
-        "fields": [
-            {"name": "Title",                  "type": "singleLineText"},
-            {"name": "Description",            "type": "multilineText"},
-            {"name": "Type",                   "type": "singleSelect",
-             "options": {"choices": [{"name": c} for c in ["daily","weekly","monthly","one-off"]]}},
-            {"name": "Priority",               "type": "singleSelect",
-             "options": {"choices": [{"name": c} for c in ["P1","P2","P3"]]}},
-            {"name": "Status",                 "type": "singleSelect",
-             "options": {"choices": [{"name": c} for c in ["todo","done"]]}},
-            {"name": "Source",                 "type": "singleLineText"},
-            {"name": "Due Date",               "type": "singleLineText"},
-            {"name": "Created At",             "type": "singleLineText"},
-            {"name": "Completed At",           "type": "singleLineText"},
-            {"name": "Recurrence Last Reset",  "type": "singleLineText"},
-        ],
+def _parse_member(rec):
+    f = rec.get("fields", {})
+    return {
+        "id": rec["id"],
+        "name": f.get("Name", ""),
+        "email": f.get("Email", ""),
+        "role": f.get("Role", ""),
+        "active": bool(f.get("Active", False)),
     }
-    r = requests.post(url, headers=_headers(), json=payload, timeout=15)
-    return r.status_code in (200, 201)
 
-# ── Public API ────────────────────────────────────────────────────────────────
-def load_tasks() -> list:
-    if not _use_airtable():
-        return _local_load()
+
+def load_tasks():
     try:
-        records, offset = [], None
-        while True:
-            params = {"pageSize": 100}
-            if offset:
-                params["offset"] = offset
-            r = requests.get(_table_url(), headers=_headers(), params=params, timeout=15)
-            r.raise_for_status()
-            data = r.json()
-            records.extend(data.get("records", []))
-            offset = data.get("offset")
-            if not offset:
-                break
-        return [_rec_to_task(rec) for rec in records]
-    except Exception:
-        return _local_load()
+        return [_parse_task(r) for r in _fetch_tasks_raw()]
+    except Exception as e:
+        if _HAS_ST:
+            st.error("Could not load tasks from Airtable: " + str(e))
+        return []
 
 
-def add_task(data: dict) -> dict:
-    task_data = {
-        "title":                 data.get("title", ""),
-        "description":           data.get("description", ""),
-        "type":                  data.get("type", "one-off"),
-        "priority":              data.get("priority", "P2"),
-        "status":                "todo",
-        "source":                data.get("source", "manual"),
-        "due_date":              data.get("due_date") or None,
-        "created_at":            datetime.now().isoformat(),
-        "completed_at":          None,
-        "recurrence_last_reset": date.today().isoformat(),
+def add_task(data):
+    fields = {
+        "Title": data.get("title", ""),
+        "Description": data.get("description", ""),
+        "Type": TYPE_NAME.get(data.get("type", "one-off"), "one-off"),
+        "Priority": data.get("priority", "P2"),
+        "Status": STATUS_NAME.get(data.get("status", "todo"), "todo "),
+        "Source": data.get("source", "manual"),
+        "Created At": datetime.now().isoformat(),
+        "Recurrence Last Reset": date.today().isoformat(),
     }
-    if not _use_airtable():
-        return _local_add(task_data)
-    r = requests.post(
-        _table_url(), headers=_headers(),
-        json={"fields": _fields_from(task_data)}, timeout=15,
+    if data.get("due_date"):
+        fields["Due Date"] = str(data["due_date"])
+    if data.get("assignee_ids"):
+        fields["Assigned To"] = list(data["assignee_ids"])
+
+    result = _request(
+        "POST",
+        _AIRTABLE + "/" + BASE_ID + "/" + TASKS_TABLE,
+        json={"fields": fields},
     )
-    if not r.ok:
-        # Raise with full Airtable error so the UI can show it
-        raise RuntimeError(f"Airtable error {r.status_code}: {r.text}")
-    return _rec_to_task(r.json())
+    _invalidate_tasks_cache()
+    return _parse_task(result)
 
 
-def update_task(task_id: str, updates: dict):
-    if _use_airtable() and task_id.startswith("rec"):
-        try:
-            fields = {}
-            mapping = {
-                "title":                 "Title",
-                "description":           "Description",
-                "type":                  "Type",
-                "priority":              "Priority",
-                "status":                "Status",
-                "source":                "Source",
-                "due_date":              "Due Date",
-                "created_at":            "Created At",
-                "completed_at":          "Completed At",
-                "recurrence_last_reset": "Recurrence Last Reset",
-            }
-            for py_k, at_k in mapping.items():
-                if py_k in updates:
-                    fields[at_k] = str(updates[py_k]) if updates[py_k] is not None else ""
+def update_task(task_id, updates):
+    fields = {}
+    if "title" in updates:
+        fields["Title"] = updates["title"]
+    if "description" in updates:
+        fields["Description"] = updates["description"]
+    if "type" in updates:
+        fields["Type"] = TYPE_NAME.get(updates["type"], "one-off")
+    if "priority" in updates:
+        fields["Priority"] = updates["priority"]
+    if "source" in updates:
+        fields["Source"] = updates["source"]
+    if "due_date" in updates:
+        fields["Due Date"] = str(updates["due_date"]) if updates["due_date"] else ""
+    if "recurrence_last_reset" in updates:
+        fields["Recurrence Last Reset"] = updates["recurrence_last_reset"] or ""
+    if "assignee_ids" in updates:
+        fields["Assigned To"] = list(updates["assignee_ids"] or [])
 
-            if updates.get("status") == "done":
+    if "status" in updates:
+        new_status = updates["status"]
+        fields["Status"] = STATUS_NAME.get(new_status, "todo ")
+        if new_status == "done":
+            if "completed_at" in updates and updates["completed_at"]:
+                fields["Completed At"] = str(updates["completed_at"])
+            else:
                 fields["Completed At"] = datetime.now().isoformat()
-            elif "status" in updates and updates["status"] != "done":
-                fields["Completed At"] = ""
+        else:
+            fields["Completed At"] = ""
+    elif "completed_at" in updates:
+        fields["Completed At"] = updates["completed_at"] or ""
 
-            if fields:
-                r = requests.patch(
-                    f"{_table_url()}/{task_id}",
-                    headers=_headers(), json={"fields": fields}, timeout=15,
-                )
-                r.raise_for_status()
-            return
-        except Exception:
-            pass
-    # Local fallback
-    tasks = _local_load()
-    for t in tasks:
-        if t["id"] == task_id:
-            t.update(updates)
-            if updates.get("status") == "done" and not t.get("completed_at"):
-                t["completed_at"] = datetime.now().isoformat()
-            elif "status" in updates and updates["status"] != "done":
-                t["completed_at"] = None
-            break
-    _local_save(tasks)
+    if not fields:
+        return
+
+    _request(
+        "PATCH",
+        _AIRTABLE + "/" + BASE_ID + "/" + TASKS_TABLE + "/" + task_id,
+        json={"fields": fields},
+    )
+    _invalidate_tasks_cache()
 
 
-def delete_task(task_id: str):
-    if _use_airtable() and task_id.startswith("rec"):
-        try:
-            r = requests.delete(
-                f"{_table_url()}/{task_id}",
-                headers=_headers(), timeout=15,
-            )
-            r.raise_for_status()
-            return
-        except Exception:
-            pass
-    tasks = _local_load()
-    _local_save([t for t in tasks if t["id"] != task_id])
+def delete_task(task_id):
+    _request("DELETE", _AIRTABLE + "/" + BASE_ID + "/" + TASKS_TABLE + "/" + task_id)
+    _invalidate_tasks_cache()
 
 
 def reset_recurring_tasks():
-    tasks = load_tasks()
-    today         = date.today()
-    this_monday   = today - timedelta(days=today.weekday())
+    try:
+        tasks = load_tasks()
+    except Exception:
+        return
+
+    today = date.today()
+    days_since_monday = today.weekday()
+    this_monday = today - timedelta(days=days_since_monday)
 
     for t in tasks:
         if t.get("status") != "done":
@@ -225,6 +273,7 @@ def reset_recurring_tasks():
         task_type = t.get("type", "one-off")
         if task_type == "one-off":
             continue
+
         raw = t.get("recurrence_last_reset")
         try:
             last_reset = date.fromisoformat(raw) if raw else today
@@ -237,31 +286,69 @@ def reset_recurring_tasks():
         elif task_type == "weekly":
             should_reset = last_reset < this_monday
         elif task_type == "monthly":
-            should_reset = (last_reset.year, last_reset.month) < (today.year, today.month)
+            should_reset = (last_reset.year < today.year) or (
+                last_reset.year == today.year and last_reset.month < today.month
+            )
 
         if should_reset:
-            update_task(t["id"], {
-                "status":                "todo",
-                "completed_at":          None,
-                "recurrence_last_reset": today.isoformat(),
-            })
+            try:
+                update_task(t["id"], {
+                    "status": "todo",
+                    "completed_at": None,
+                    "recurrence_last_reset": today.isoformat(),
+                })
+            except Exception:
+                continue
 
 
-# ── Local JSON fallback ───────────────────────────────────────────────────────
-def _local_load() -> list:
-    if not _LOCAL_FILE.exists():
-        return []
+def load_members(active_only=False):
     try:
-        return json.loads(_LOCAL_FILE.read_text(encoding="utf-8"))
-    except Exception:
+        members = [_parse_member(r) for r in _fetch_members_raw()]
+    except Exception as e:
+        if _HAS_ST:
+            st.error("Could not load team members from Airtable: " + str(e))
         return []
+    if active_only:
+        members = [m for m in members if m["active"]]
+    return members
 
-def _local_save(tasks: list):
-    _LOCAL_FILE.write_text(json.dumps(tasks, indent=2, default=str), encoding="utf-8")
 
-def _local_add(task_data: dict) -> dict:
-    task_data["id"] = str(uuid.uuid4())
-    tasks = _local_load()
-    tasks.append(task_data)
-    _local_save(tasks)
-    return task_data
+def add_member(data):
+    fields = {
+        "Name": data.get("name", ""),
+        "Email": data.get("email", ""),
+        "Role": data.get("role", ""),
+        "Active": bool(data.get("active", True)),
+    }
+    result = _request(
+        "POST",
+        _AIRTABLE + "/" + BASE_ID + "/" + MEMBERS_TABLE,
+        json={"fields": fields},
+    )
+    _invalidate_members_cache()
+    return _parse_member(result)
+
+
+def update_member(member_id, updates):
+    fields = {}
+    if "name" in updates:
+        fields["Name"] = updates["name"]
+    if "email" in updates:
+        fields["Email"] = updates["email"]
+    if "role" in updates:
+        fields["Role"] = updates["role"]
+    if "active" in updates:
+        fields["Active"] = bool(updates["active"])
+    if not fields:
+        return
+    _request(
+        "PATCH",
+        _AIRTABLE + "/" + BASE_ID + "/" + MEMBERS_TABLE + "/" + member_id,
+        json={"fields": fields},
+    )
+    _invalidate_members_cache()
+
+
+def delete_member(member_id):
+    _request("DELETE", _AIRTABLE + "/" + BASE_ID + "/" + MEMBERS_TABLE + "/" + member_id)
+    _invalidate_members_cache()
