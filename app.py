@@ -1409,27 +1409,13 @@ if "onboarding_output" not in st.session_state:
 if "onboarding_input" not in st.session_state:
     st.session_state.onboarding_input = ""
 
-# ── Node.js availability check ────────────────────────────────────────────────
-import shutil as _shutil
-_node_available = _shutil.which("node") is not None
-
-if not _node_available:
-    st.error(
-        "🖥️ **Node.js not found — this feature requires a local install.**\n\n"
-        "The onboarding automation runs Node.js scripts on your machine. "
-        "It cannot run on Streamlit Cloud or any server without Node.js installed.\n\n"
-        "**To use this feature:** run the app locally (`streamlit run app.py`) "
-        "on a machine that has Node.js installed."
-    )
-
 # ── How to Use ────────────────────────────────────────────────────────────────
 st.info(
     "**How to use:**  Select a step from the dropdown and click **▶️ Start Step**. "
-    "Steps must be run **in order (1 → 7)** for each new funeral home. "
+    "Steps must be run **in order (1 → 6)** for each new funeral home. "
     "The automation will ask you questions — type your answer and press **Send**, "
     "or use the **Yes / No** buttons for confirmation prompts. "
-    "Do not close or navigate away while a step is running. "
-    "⚠️ **Requires running the app locally with Node.js installed.**"
+    "Do not close or navigate away while a step is running."
 )
 
 st.warning(
@@ -1468,12 +1454,8 @@ with col_step:
 
 with col_action:
     st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
-    can_start = _node_available and (st.session_state.onboarding is None or not st.session_state.onboarding.is_running())
-    _start_help = (
-        "Node.js is not installed on this machine" if not _node_available
-        else "A step is already running — finish or cancel it first" if not can_start
-        else None
-    )
+    can_start = st.session_state.onboarding is None or not st.session_state.onboarding.is_running()
+    _start_help = "A step is already running — finish or cancel it first" if not can_start else None
     if st.button("▶️ Start Step", use_container_width=True, disabled=not can_start, help=_start_help):
         ob = OnboardingAutomation()
         st.session_state.onboarding = ob

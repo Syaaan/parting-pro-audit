@@ -1,118 +1,69 @@
 """
-Wrapper to run onboarding.js in web mode from Streamlit
-Handles spawning the Node.js process and communicating with it via JSON
+Wrapper to run onboarding automation from Streamlit.
+Pure-Python version — no Node.js required. Runs in a background thread.
 """
 
-import subprocess
-import json
-import os
-from pathlib import Path
-from queue import Queue
+from queue import Queue, Empty
 from threading import Thread
 
-ONBOARDING_DIR = Path(__file__).parent / "onboarding-automation"
 
 class OnboardingAutomation:
     def __init__(self):
-        self.process = None
         self.output_queue = Queue()
+        self.answer_queue = Queue()
+        self._thread = None
         self.running = False
 
     def start_step(self, step_number: str) -> None:
-        """Start a specific onboarding step (1-7)"""
+        """Start a specific onboarding step (1-7) in a background thread."""
         if self.running:
             raise RuntimeError("Onboarding process already running")
 
-        # Validate step
-        if step_number not in ["1", "2", "3", "4", "5", "6", "7"]:
+        if step_number not in {"1", "2", "3", "4", "5", "6", "7"}:
             raise ValueError(f"Invalid step number: {step_number}")
 
-        env = os.environ.copy()
-        env["WEB_MODE"] = "1"
-        env["WEB_STEP"] = step_number
-        env["NODE_PATH"] = str(ONBOARDING_DIR / "node_modules")
+        self.running = True
+        self._thread = Thread(target=self._run, args=(step_number,), daemon=True)
+        self._thread.start()
 
+    def _run(self, step_number: str) -> None:
         try:
-            self.process = subprocess.Popen(
-                ["node", str(ONBOARDING_DIR / "onboarding.js")],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                encoding="utf-8",
-                bufsize=1,
-                cwd=str(ONBOARDING_DIR),
-                env=env
-            )
-            self.running = True
-
-            # Start thread to read output
-            Thread(target=self._read_output, daemon=True).start()
-        except FileNotFoundError:
-            raise RuntimeError("Node.js not found. Please install Node.js to use onboarding automation.")
-        except Exception as e:
-            raise RuntimeError(f"Failed to start onboarding process: {str(e)}")
-
-    def _read_output(self):
-        """Read output from the process and queue messages"""
-        try:
-            while self.process and self.process.poll() is None:
-                try:
-                    line = self.process.stdout.readline()
-                    if not line:
-                        break
-
-                    # Try to parse as JSON (web mode output)
-                    try:
-                        msg = json.loads(line.strip())
-                        self.output_queue.put(msg)
-                    except json.JSONDecodeError:
-                        # Regular text output
-                        self.output_queue.put({"t": "log", "m": line.strip()})
-                except:
-                    break
-
-            # Mark as done
+            from onboarding_automation import run_step
+            run_step(step_number, self.output_queue, self.answer_queue)
             self.output_queue.put({"t": "done"})
-            self.running = False
+        except InterruptedError:
+            self.output_queue.put({"t": "done"})  # cancelled cleanly
         except Exception as e:
             self.output_queue.put({"t": "error", "m": str(e)})
+        finally:
             self.running = False
 
     def send_answer(self, answer: str) -> None:
-        """Send an answer to a prompt"""
-        if not self.process or not self.running:
+        """Send an answer to a waiting prompt."""
+        if not self.running:
             raise RuntimeError("No active onboarding process")
-
-        try:
-            self.process.stdin.write(answer + "\n")
-            self.process.stdin.flush()
-        except Exception as e:
-            raise RuntimeError(f"Failed to send answer: {str(e)}")
+        self.answer_queue.put(answer)
 
     def get_output(self):
-        """Get next message from the queue (non-blocking)"""
+        """Get next message from the queue (non-blocking). Returns None if empty."""
         try:
             return self.output_queue.get_nowait()
-        except:
+        except Empty:
             return None
 
-    def stop(self):
-        """Stop the onboarding process"""
-        if self.process:
-            try:
-                self.process.terminate()
-                self.process.wait(timeout=5)
-            except:
-                self.process.kill()
-            self.process = None
-            self.running = False
+    def stop(self) -> None:
+        """Cancel the running step."""
+        self.running = False
+        try:
+            self.answer_queue.put("__STOP__")
+        except Exception:
+            pass
 
     def is_running(self) -> bool:
-        """Check if process is still running"""
-        return self.running and self.process is not None
+        return self.running and self._thread is not None and self._thread.is_alive()
 
 
-# Steps metadata
+# Steps metadata (used by app.py for the UI)
 STEPS = [
     {
         "key": "1",
