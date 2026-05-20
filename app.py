@@ -210,7 +210,7 @@ def revert_phone_records(base_id, revert_rows):
         time.sleep(0.22)
     return success, errors
 
-def fetch_records(base_id, table, fields, filter_formula=None):
+def fetch_records(base_id, table, fields, filter_formula=None, cell_format=None):
     records, offset = [], None
     url = f"https://api.airtable.com/v0/{base_id}/{requests.utils.quote(table)}"
     while True:
@@ -219,6 +219,8 @@ def fetch_records(base_id, table, fields, filter_formula=None):
             params["offset"] = offset
         if filter_formula:
             params["filterByFormula"] = filter_formula
+        if cell_format:
+            params["cellFormat"] = cell_format
         r = requests.get(url, headers=HEADERS, params=params)
         r.raise_for_status()
         data = r.json()
@@ -255,7 +257,8 @@ def run_message_audit(base_id, base_name):
         ["Direction", "Message Content", "Message Type",
          "Contact Full Name: (from Contact Cell)",
          "Funeral Home: (from Contact Cell)"],
-        filter_formula='FIND("outbound", LOWER({Direction})) > 0'
+        filter_formula='FIND("outbound", LOWER({Direction})) > 0',
+        cell_format="string"
     )
     rows = []
     for rec in records:
@@ -263,8 +266,8 @@ def run_message_audit(base_id, base_name):
         content = f.get("Message Content", "")
         name_raw = f.get("Contact Full Name: (from Contact Cell)", "")
         name = name_raw[0] if isinstance(name_raw, list) and name_raw else str(name_raw) if name_raw else "(unknown)"
-        fh_raw = f.get("Funeral Home: (from Contact Cell)", [])
-        fh = fh_raw[0] if isinstance(fh_raw, list) and fh_raw else str(fh_raw) if fh_raw else "(unknown)"
+        fh_raw = f.get("Funeral Home: (from Contact Cell)", "")
+        fh = fh_raw if isinstance(fh_raw, str) and fh_raw else (fh_raw[0] if isinstance(fh_raw, list) and fh_raw else "(unknown)")
         cat = categorize_message(content)
         rows.append({
             "Base": base_name,
