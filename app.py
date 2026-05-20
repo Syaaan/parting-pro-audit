@@ -1384,6 +1384,131 @@ with tab_zap:
             csv, f"zap_audit_{run_date}.csv", mime="text/csv"
         )
 
+# ── Onboarding log renderer ───────────────────────────────────────────────────
+def _render_log_line(content: str):
+    """Render a single log line with smart styling based on content."""
+    import html as _html
+    c = content.strip()
+    safe = _html.escape(c)
+
+    # Section header: ══════ or ────────
+    if c.startswith("═") or c.startswith("╔") or c.startswith("╚"):
+        return  # skip pure border lines — they're visual noise
+    if c.startswith("╠") or c.startswith("║"):
+        # Banner lines — show as bold header
+        text = c.lstrip("║╠╔╚═ ").rstrip("║═ ")
+        if text:
+            st.markdown(
+                f"<div style='background:#1e3a5f;color:#93c5fd;font-weight:700;"
+                f"font-size:13px;padding:6px 12px;border-radius:4px;margin:6px 0'>"
+                f"{_html.escape(text)}</div>",
+                unsafe_allow_html=True
+            )
+        return
+
+    # Box borders (┌ ├ └ │)
+    if c.startswith("┌") or c.startswith("├") or c.startswith("└"):
+        return  # skip box-drawing borders
+    if c.startswith("│"):
+        row = c.lstrip("│ ").rstrip("│ ")
+        if row:
+            st.markdown(
+                f"<div style='font-size:13px;padding:2px 12px;color:#374151;"
+                f"border-left:2px solid #e5e7eb;margin:1px 0'>{_html.escape(row)}</div>",
+                unsafe_allow_html=True
+            )
+        return
+
+    # Divider: ── or —
+    if set(c.replace(" ", "")) <= {"─", "—", "-"} and len(c) > 6:
+        st.markdown("<hr style='border:none;border-top:1px solid #e5e7eb;margin:8px 0'>",
+                    unsafe_allow_html=True)
+        return
+
+    # List item: [1] Name — City, State (...)
+    import re as _re
+    list_match = _re.match(r"^\[(\d+)\]\s+(.+)$", c)
+    if list_match:
+        num = list_match.group(1)
+        text = list_match.group(2)
+        st.markdown(
+            f"<div style='display:flex;gap:10px;align-items:baseline;padding:6px 10px;"
+            f"background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;margin:3px 0'>"
+            f"<span style='background:#3b82f6;color:white;font-size:11px;font-weight:700;"
+            f"padding:2px 7px;border-radius:10px;min-width:24px;text-align:center'>{num}</span>"
+            f"<span style='font-size:13px;color:#1e293b'>{_html.escape(text)}</span></div>",
+            unsafe_allow_html=True
+        )
+        return
+
+    # Step header: STEP X: Title
+    if _re.match(r"^(STEP\s+\d|Step\s+\d)", c):
+        st.markdown(
+            f"<div style='background:#dbeafe;color:#1e40af;font-weight:700;"
+            f"font-size:14px;padding:8px 14px;border-radius:6px;margin:8px 0'>"
+            f"🔷 {safe}</div>",
+            unsafe_allow_html=True
+        )
+        return
+
+    # Instruction: 👉
+    if c.startswith("👉") or "👉" in c[:6]:
+        st.markdown(
+            f"<div style='background:#fefce8;border-left:4px solid #eab308;"
+            f"padding:8px 14px;border-radius:4px;margin:6px 0;font-size:13px;color:#713f12'>"
+            f"{safe}</div>",
+            unsafe_allow_html=True
+        )
+        return
+
+    # Success: ✅
+    if c.startswith("✅"):
+        st.markdown(
+            f"<div style='background:#f0fdf4;color:#166534;font-size:13px;"
+            f"padding:5px 12px;border-radius:4px;margin:3px 0'>{safe}</div>",
+            unsafe_allow_html=True
+        )
+        return
+
+    # Warning: ⚠️ or ⏭️
+    if c.startswith("⚠️") or c.startswith("⏭️"):
+        st.markdown(
+            f"<div style='background:#fff7ed;color:#9a3412;font-size:13px;"
+            f"padding:5px 12px;border-radius:4px;margin:3px 0'>{safe}</div>",
+            unsafe_allow_html=True
+        )
+        return
+
+    # Info: ℹ️
+    if c.startswith("ℹ️"):
+        st.markdown(
+            f"<div style='color:#475569;font-size:13px;padding:3px 12px;margin:2px 0'>"
+            f"{safe}</div>",
+            unsafe_allow_html=True
+        )
+        return
+
+    # Link: 🔗
+    if c.startswith("🔗"):
+        st.markdown(
+            f"<div style='background:#f0f9ff;border-left:3px solid #38bdf8;"
+            f"padding:6px 12px;font-size:13px;color:#0369a1;margin:4px 0'>{safe}</div>",
+            unsafe_allow_html=True
+        )
+        return
+
+    # Blank / pure whitespace — skip
+    if not c:
+        return
+
+    # Default: plain text
+    st.markdown(
+        f"<div style='font-size:13px;color:#374151;padding:2px 10px;margin:1px 0'>"
+        f"{safe}</div>",
+        unsafe_allow_html=True
+    )
+
+
 # ── Onboarding Tab ────────────────────────────────────────────────────────────
 tab_onboarding.__enter__()
 
@@ -1513,14 +1638,15 @@ if st.session_state.onboarding and st.session_state.onboarding.is_running():
     with output_container:
         for msg_type, content in st.session_state.onboarding_output:
             if msg_type == "log":
+                _render_log_line(content)
+            elif msg_type == "ask":
                 st.markdown(
-                    f"<div style='font-family:monospace;font-size:13px;padding:3px 8px;"
-                    f"background:#1a1a2e;border-radius:3px;color:#a8d8a8;margin:2px 0'>"
-                    f"▸ {content}</div>",
+                    f"<div style='background:#fffbeb;border-left:4px solid #f59e0b;"
+                    f"padding:10px 14px;border-radius:4px;margin:8px 0;"
+                    f"font-size:14px;color:#92400e'>"
+                    f"<strong>❓ Input needed:</strong> {content}</div>",
                     unsafe_allow_html=True
                 )
-            elif msg_type == "ask":
-                st.info(f"❓ {content}")
             elif msg_type == "done":
                 st.success(content)
             elif msg_type == "error":
@@ -1605,14 +1731,15 @@ elif st.session_state.onboarding_output:
     st.markdown("**Process Output:**")
     for msg_type, content in st.session_state.onboarding_output:
         if msg_type == "log":
+            _render_log_line(content)
+        elif msg_type == "ask":
             st.markdown(
-                f"<div style='font-family:monospace;font-size:13px;padding:3px 8px;"
-                f"background:#1a1a2e;border-radius:3px;color:#a8d8a8;margin:2px 0'>"
-                f"▸ {content}</div>",
+                f"<div style='background:#fffbeb;border-left:4px solid #f59e0b;"
+                f"padding:10px 14px;border-radius:4px;margin:8px 0;"
+                f"font-size:14px;color:#92400e'>"
+                f"<strong>❓</strong> {content}</div>",
                 unsafe_allow_html=True
             )
-        elif msg_type == "ask":
-            st.info(f"❓ {content}")
         elif msg_type == "done":
             st.success(content)
         elif msg_type == "error":
