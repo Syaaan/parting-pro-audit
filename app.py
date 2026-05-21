@@ -249,6 +249,11 @@ st.set_page_config(
     page_icon="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo.png"
 )
 
+# ── Dark-mode session state (read at top so CSS picks it up on every rerun) ──
+if "dark_mode" not in st.session_state:
+    st.session_state["dark_mode"] = False
+_DARK = bool(st.session_state["dark_mode"])
+
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -486,8 +491,10 @@ section[data-testid="stMain"] .vega-embed .mark-text text {
     fill: #1a2b4a !important;
 }
 
-/* Keep hero / sidebar text untouched (white) */
-.hero, .hero * { color: inherit; }
+/* Hero text must stay white — earlier `color: inherit` was leaking dark body color through */
+.hero, .hero h1, .hero h2, .hero h3, .hero p, .hero div, .hero span { color: #ffffff !important; }
+.hero .hero-subtitle { color: rgba(255,255,255,0.75) !important; }
+.hero .hero-badge { color: rgba(255,255,255,0.9) !important; }
 section[data-testid="stSidebar"] * { color: rgba(255,255,255,0.85) !important; }
 
 /* ── Sidebar ── */
@@ -569,6 +576,119 @@ hr { border-color: #e4e7ef !important; margin: 24px 0 !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# ── Dark-mode CSS overrides ───────────────────────────────────────────────────
+# Injected only when the sidebar toggle is on. We override the light theme
+# rather than rewriting it so the light theme stays the default and unchanged.
+if _DARK:
+    st.markdown("""
+    <style>
+    /* Page background + global text */
+    .stApp { background: #0d1117 !important; }
+    section[data-testid="stMain"] { background: #0d1117 !important; }
+
+    /* Cards, sections, panels — dark surface */
+    .card, .section-wrap, .metric, .empty {
+        background: #161b22 !important;
+        border-color: #2a3142 !important;
+        box-shadow: 0 1px 6px rgba(0,0,0,0.4) !important;
+    }
+    .section-head { border-bottom-color: #2a3142 !important; }
+    hr { border-color: #2a3142 !important; }
+
+    /* Primary text — flip dark navy to soft light gray */
+    section[data-testid="stMain"] p,
+    section[data-testid="stMain"] span,
+    section[data-testid="stMain"] li,
+    section[data-testid="stMain"] strong,
+    section[data-testid="stMain"] em,
+    section[data-testid="stMain"] h1,
+    section[data-testid="stMain"] h2,
+    section[data-testid="stMain"] h3,
+    section[data-testid="stMain"] h4,
+    section[data-testid="stMain"] h5,
+    .card-title, .section-head-text h3, .metric .m-value,
+    .task-title {
+        color: #e4e7ef !important;
+    }
+    .section-head-text p, .metric .m-label, .metric .m-sub,
+    .task-desc, .due-ok {
+        color: #9aa5b4 !important;
+    }
+
+    /* Hero still has its own background gradient — keep text crisp white */
+    .hero, .hero * { color: #ffffff !important; }
+    .hero .hero-subtitle { color: rgba(255,255,255,0.75) !important; }
+
+    /* Inputs / selects / textareas */
+    section[data-testid="stMain"] input,
+    section[data-testid="stMain"] textarea,
+    section[data-testid="stMain"] select,
+    section[data-testid="stMain"] .stNumberInput input,
+    section[data-testid="stMain"] .stDateInput input,
+    section[data-testid="stMain"] [data-baseweb="input"] input,
+    section[data-testid="stMain"] [data-baseweb="select"] > div {
+        background: #161b22 !important;
+        color: #e4e7ef !important;
+        border-color: #2a3142 !important;
+    }
+
+    /* Tab bar */
+    section[data-testid="stMain"] [data-baseweb="tab-list"] {
+        background: #0d1117 !important;
+        border-bottom-color: #2a3142 !important;
+    }
+    section[data-testid="stMain"] [data-baseweb="tab"] { color: #9aa5b4 !important; }
+    section[data-testid="stMain"] [data-baseweb="tab"][aria-selected="true"] {
+        color: #e4e7ef !important;
+    }
+
+    /* Expanders */
+    section[data-testid="stMain"] [data-testid="stExpander"] {
+        background: #161b22 !important;
+        border: 1px solid #2a3142 !important;
+        border-radius: 8px !important;
+    }
+    section[data-testid="stMain"] [data-testid="stExpander"] summary { color: #e4e7ef !important; }
+
+    /* Code / pre blocks */
+    section[data-testid="stMain"] code,
+    section[data-testid="stMain"] pre {
+        background: #0d1117 !important;
+        color: #e4e7ef !important;
+        border: 1px solid #2a3142 !important;
+    }
+
+    /* Dataframes */
+    section[data-testid="stMain"] .stDataFrame { background: #161b22 !important; }
+    section[data-testid="stMain"] [data-testid="stDataFrame"] * { color: #e4e7ef !important; }
+
+    /* Alerts — keep their semantic background but darken slightly */
+    section[data-testid="stMain"] [data-testid="stAlert"] {
+        background: #161b22 !important;
+        border-left-width: 3px !important;
+    }
+
+    /* Sidebar already dark — just deepen it a touch */
+    section[data-testid="stSidebar"] { background: #0a0e14 !important; }
+
+    /* Buttons in the main area */
+    section[data-testid="stMain"] .stButton > button {
+        background: #1f2937 !important;
+        color: #e4e7ef !important;
+        border-color: #2a3142 !important;
+    }
+    section[data-testid="stMain"] .stButton > button:hover {
+        background: #2a3441 !important;
+        border-color: #3b5bdb !important;
+    }
+
+    /* Pills + badges — invert the light pastel backgrounds to fit dark mode */
+    .pill-p3 { background: #1f2937 !important; color: #c8cdd8 !important; border-color: #2a3142 !important; }
+    .type-badge { background: #1c2a4a !important; color: #93b3ff !important; }
+    .base-tag { background: #1c2a4a !important; color: #93b3ff !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
 # ── Task Tracker — session state & recurrence reset ──────────────────────────
 for _k in ("editing_task_id", "deleting_task_id"):
     if _k not in st.session_state:
@@ -595,6 +715,8 @@ with st.sidebar:
              style="height:28px; filter: brightness(0) invert(1);" />
     </div>
     """, unsafe_allow_html=True)
+    # Dark-mode toggle — bound to session_state["dark_mode"] via key; flip triggers rerun
+    st.toggle("🌙  Dark mode", key="dark_mode", help="Switch the main content to a dark theme")
     st.markdown("---")
     st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:8px;'>Connected Bases</div>", unsafe_allow_html=True)
     for b in BASE_IDS:
