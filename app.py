@@ -22,7 +22,8 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 BASE_IDS = ["appbXFzZnhij88tnQ", "appXT2xJZ1zgll4fG"]
 
 N8N_WEBHOOK = "http://localhost:5678/webhook/run-zap-audit"
-AUDIT_DIR = Path(__file__).parent.parent / "query"
+AUDIT_DIR = Path(__file__).parent / "query"
+AUDIT_DIR.mkdir(exist_ok=True)  # create on first run if missing
 
 # ── Zap Audit helpers ─────────────────────────────────────────────────────────
 @st.cache_data(ttl=300)
@@ -39,7 +40,10 @@ def fetch_query_zap_list():
 
 def load_audit_runs() -> list[dict]:
     """Read all audit_run_*.json files from the query/ folder, newest first."""
-    files = sorted(AUDIT_DIR.glob("audit_run_*.json"), reverse=True)
+    try:
+        files = sorted(AUDIT_DIR.glob("audit_run_*.json"), reverse=True)
+    except Exception:
+        return []
     runs = []
     for f in files:
         try:
@@ -1039,7 +1043,10 @@ with tab_zap:
                 else:
                     st.error(f"n8n returned {resp.status_code}: {resp.text[:200]}")
             except requests.exceptions.ConnectionError:
-                st.error("Could not reach n8n at localhost:5678. Make sure n8n is running and the workflow is active.")
+                st.warning(
+                    "⚠️ **Could not reach n8n** — the audit runner is only available when running the app locally "
+                    "with n8n active at localhost:5678. The Zap list and any previously saved audit results are still shown below."
+                )
             except Exception as e:
                 st.error(f"Error: {e}")
 
