@@ -21,87 +21,6 @@ TOKEN = "patm2acj3jyDwBfyD.3fb175e7596542e2a9be3acc07700272cf8cb09028c58cc03a6d8
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 BASE_IDS = ["appbXFzZnhij88tnQ", "appXT2xJZ1zgll4fG"]
 
-N8N_WEBHOOK = "http://localhost:5678/webhook/run-zap-audit"
-AUDIT_DIR = Path(__file__).parent / "query"
-AUDIT_DIR.mkdir(exist_ok=True)  # create on first run if missing
-
-# ── Zap Audit helpers ─────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)
-def fetch_query_zap_list():
-    url = "https://api.airtable.com/v0/appbXFzZnhij88tnQ/Funeral%20Home%20Information"
-    params = {
-        "filterByFormula": 'AND({Active Status:}="Active",{Parting Pro ID:}>0)',
-        "fields[]": ["Funeral Home Name:", "Parting Pro ID:", "Go-Live Date"],
-        "pageSize": 100,
-    }
-    resp = requests.get(url, headers={"Authorization": f"Bearer {TOKEN}"}, params=params, timeout=15)
-    resp.raise_for_status()
-    return resp.json().get("records", [])
-
-def load_audit_runs() -> list[dict]:
-    """Read all audit_run_*.json files from the query/ folder, newest first."""
-    try:
-        files = sorted(AUDIT_DIR.glob("audit_run_*.json"), reverse=True)
-    except Exception:
-        return []
-    runs = []
-    for f in files:
-        try:
-            runs.append(json.loads(f.read_text(encoding="utf-8")))
-        except Exception:
-            pass
-    return runs
-
-def latest_audit_df(runs: list[dict]) -> pd.DataFrame:
-    """Flatten the most recent run into a DataFrame, upgrading No Cases → Dead."""
-    if not runs:
-        return pd.DataFrame()
-    latest = runs[0]
-    results = latest.get("results", [])
-
-    # Build a history map: parting_pro_id → list of statuses (newest first)
-    history: dict[int, list[str]] = {}
-    for run in runs[1:]:
-        for r in run.get("results", []):
-            ppid = r.get("parting_pro_id")
-            if ppid:
-                history.setdefault(ppid, []).append(r.get("status", ""))
-
-    rows = []
-    for r in results:
-        ppid = r.get("parting_pro_id")
-        status = r.get("status", "")
-        if status == "No Cases":
-            # Upgrade to Dead if no Healthy run in the last 14 days
-            past = history.get(ppid, [])
-            had_healthy_recently = any(s == "Healthy" for s in past[:14])
-            if not had_healthy_recently and len(past) >= 2:
-                status = "Dead"
-        rows.append({
-            "Funeral Home": r.get("funeral_home_name", ""),
-            "ID": ppid,
-            "DB Cases": r.get("db_row_count", 0),
-            "Airtable Records": r.get("airtable_record_count", 0),
-            "Status": status,
-            "Notes": r.get("notes", ""),
-            "Go-Live Date": r.get("go_live_date", ""),
-        })
-    return pd.DataFrame(rows)
-
-STATUS_EMOJI = {
-    "Healthy": "🟢",
-    "No Cases": "🟡",
-    "Missing Data": "🔴",
-    "Dead": "⚫",
-    "New": "🔵",
-}
-STATUS_COLOR = {
-    "Healthy": "#1a9e5c",
-    "No Cases": "#e07b39",
-    "Missing Data": "#e05252",
-    "Dead": "#4a5568",
-    "New": "#3b7de8",
-}
 TARGET = re.compile(r"^\+1\d{10}$")
 PLACEHOLDER_PATTERNS = [
     re.compile(r"\{[^}]+\}"),
@@ -1030,374 +949,63 @@ st.markdown("""
 tab_texting.__exit__(None, None, None)
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Zap Audit
+# TAB 2 — Zap Audit  (embedded zap-audit-cloud dashboard)
 # ════════════════════════════════════════════════════════════════════════════
 with tab_zap:
-    # ── Audit Controls (Zap tab) ──────────────────────────────────────────
-    run_zap_audit = st.button("🔍  Run Zap Audit Now", use_container_width=True, key="run_zap_audit_btn")
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    import streamlit.components.v1 as _components
 
-    # ── Trigger n8n run ───────────────────────────────────────────────────
-    if run_zap_audit:
-        with st.spinner("Triggering n8n audit workflow…"):
-            try:
-                resp = requests.post(N8N_WEBHOOK, json={}, timeout=300)
-                if resp.ok:
-                    st.success("✅ Audit run complete — results saved.")
-                    st.rerun()
-                else:
-                    st.error(f"n8n returned {resp.status_code}: {resp.text[:200]}")
-            except requests.exceptions.ConnectionError:
-                st.warning(
-                    "⚠️ **Could not reach n8n** — the audit runner is only available when running the app locally "
-                    "with n8n active at localhost:5678. The Zap list and any previously saved audit results are still shown below."
-                )
-            except Exception as e:
-                st.error(f"Error: {e}")
-
-    # ── Load data ─────────────────────────────────────────────────────────
-    runs = load_audit_runs()
-
-    # ── Query Zaps List (always visible) ──────────────────────────────────
-    st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-    st.markdown('<div class="section-head"><div class="section-icon">🔎</div><div class="section-head-text"><h3>Query Zaps</h3><p>Active "Query Data to upload in Airtable" zaps and their latest audit results</p></div></div>', unsafe_allow_html=True)
-
-    # Build lookup from latest audit run if available
-    audit_lookup = {}
-    if runs:
-        for r in runs[0].get("results", []):
-            audit_lookup[int(r.get("parting_pro_id", 0))] = r
-
-    try:
-        fh_records = fetch_query_zap_list()
-        qz_rows = []
-        for rec in fh_records:
-            f = rec.get("fields", {})
-            ppid = int(f.get("Parting Pro ID:", 0) or 0)
-            if not ppid:
-                continue
-            fh_name = (f.get("Funeral Home Name:", "") or "").strip()
-            go_live  = f.get("Go-Live Date", "") or "—"
-            zap_title = f"{fh_name} - Query Data to upload in airtable - funeral_home_id = {ppid}"
-
-            # Overlay audit result if available
-            audit = audit_lookup.get(ppid)
-            if audit:
-                status   = audit.get("status", "")
-                db_count = audit.get("db_row_count", 0)
-                at_count = audit.get("airtable_record_count", 0)
-                notes    = audit.get("notes", "") or "—"
-                if status == "New":
-                    result = "⏭️ Skipped (New FH)"
-                elif db_count == 0:
-                    result = "🟡 Filtered — no cases in window"
-                elif db_count > 0 and at_count > 0:
-                    result = "✅ Success"
-                elif db_count > 0 and at_count == 0:
-                    result = "🛑 Halted — cases not pushed"
-                else:
-                    result = "❌ Error"
-                last_checked = runs[0].get("run_date", "—")
-            else:
-                status, db_count, at_count, notes = "—", "—", "—", "—"
-                result = "⏳ Not yet audited"
-                last_checked = "—"
-
-            qz_rows.append({
-                "Zap Title": zap_title,
-                "Go-Live": go_live,
-                "Query Result": result,
-                "DB Cases (7–14d)": db_count,
-                "Airtable Records (7d)": at_count,
-                "Status": f"{STATUS_EMOJI.get(status, '')} {status}".strip(),
-                "Notes": notes,
-                "Last Checked": last_checked,
-            })
-
-        qz_df = pd.DataFrame(qz_rows)
-
-        qz_c1, qz_c2 = st.columns([3, 2])
-        with qz_c1:
-            qz_search = st.text_input("Search", key="qz_always_search", placeholder="Search funeral home…")
-        with qz_c2:
-            qz_filter = st.multiselect(
-                "Filter by result",
-                options=["✅ Success", "🛑 Halted — cases not pushed", "🟡 Filtered — no cases in window", "⏳ Not yet audited", "⏭️ Skipped (New FH)", "❌ Error"],
-                default=[],
-                key="qz_always_filter"
-            )
-
-        qz_view = qz_df.copy()
-        if qz_search:
-            qz_view = qz_view[qz_view["Zap Title"].str.contains(qz_search, case=False, na=False)]
-        if qz_filter:
-            qz_view = qz_view[qz_view["Query Result"].isin(qz_filter)]
-
-        st.dataframe(qz_view, use_container_width=True, hide_index=True)
-        audited = sum(1 for r in qz_rows if r["Last Checked"] != "—")
-        st.caption(f"{len(qz_view)} of {len(qz_df)} query zaps shown  ·  {audited} audited  ·  {len(qz_df) - audited} pending first run")
-
-    except Exception as e:
-        import traceback
-        st.error(f"❌ Query Zaps error: {e}")
-        st.code(traceback.format_exc())
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    if not runs:
-        st.info("No audit runs yet — click **Run Zap Audit Now** above to populate results.")
-    else:
-        latest = runs[0]
-        summary = latest.get("summary", {})
-        run_date = latest.get("run_date", "—")
-        run_at = latest.get("run_at", "")
-        df = latest_audit_df(runs)
-
-        # ── Summary cards ─────────────────────────────────────────────────
-        st.markdown(f"""
-        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
-            <div style="font-size:18px; font-weight:700; color:#1a2b4a;">Zap Health Report</div>
-            <div style="font-size:12px; color:#4a5568; background:#f0f2f7; padding:6px 14px; border-radius:20px;">
-                Last run: {run_date} &nbsp;·&nbsp; {summary.get('total', 0)} funeral homes
-            </div>
+    # ── Header ────────────────────────────────────────────────────────────
+    st.markdown('''
+    <div class="section-wrap">
+      <div class="section-head">
+        <div class="section-icon">⚡</div>
+        <div class="section-head-text">
+          <h3>Zap Audit Dashboard</h3>
+          <p>Live dashboard from <code>zap-audit-cloud</code> — full Zapier run history, AI-flagged failures, and per-zap drill-downs.</p>
         </div>
-        <div class="metrics-row">
-            <div class="metric green">
-                <div class="m-label">🟢 Healthy</div>
-                <div class="m-value">{summary.get('healthy', 0)}</div>
-                <div class="m-sub">Zap working</div>
-            </div>
-            <div class="metric" style="border-left:3px solid #e07b39;">
-                <div class="m-label">🟡 No Cases</div>
-                <div class="m-value" style="color:#e07b39;">{summary.get('no_cases', 0)}</div>
-                <div class="m-sub">Quiet window</div>
-            </div>
-            <div class="metric red">
-                <div class="m-label">🔴 Missing Data</div>
-                <div class="m-value">{summary.get('missing_data', 0)}</div>
-                <div class="m-sub">Action needed</div>
-            </div>
-            <div class="metric" style="border-left:3px solid #4a5568;">
-                <div class="m-label">⚫ Dead</div>
-                <div class="m-value" style="color:#4a5568;">{summary.get('dead', 0)}</div>
-                <div class="m-sub">Investigate</div>
-            </div>
-            <div class="metric blue">
-                <div class="m-label">🔵 New</div>
-                <div class="m-value">{summary.get('new_fh', 0)}</div>
-                <div class="m-sub">Recently onboarded</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+      </div>
+    </div>
+    ''', unsafe_allow_html=True)
 
-        # ── Action required banner ────────────────────────────────────────
-        flagged = df[df["Status"].isin(["Missing Data", "Dead"])]
-        if not flagged.empty:
-            items_html = "".join(
-                f"<div style='padding:6px 0; border-bottom:1px solid rgba(255,255,255,0.1);'>"
-                f"{STATUS_EMOJI.get(row['Status'], '')} <strong>{row['Funeral Home']}</strong>"
-                f" &nbsp;<span style='opacity:0.7; font-size:12px;'>(ID: {row['ID']})</span>"
-                f"{'  — ' + row['Notes'] if row['Notes'] else ''}</div>"
-                for _, row in flagged.iterrows()
-            )
-            st.markdown(f"""
-            <div style="background:#e05252; border-radius:12px; padding:20px 24px; margin-bottom:20px; color:white;">
-                <div style="font-weight:700; font-size:15px; margin-bottom:12px;">⚠️ {len(flagged)} funeral home(s) need attention</div>
-                {items_html}
-            </div>
-            """, unsafe_allow_html=True)
+    # ── Embedded dashboard (runs on user's local machine at port 3000) ────
+    ZAP_DASHBOARD_URL = "http://localhost:3000"
+    _components.iframe(ZAP_DASHBOARD_URL, height=1100, scrolling=True)
 
-        # ── Monitored Zaps ────────────────────────────────────────────────
-        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-        st.markdown('<div class="section-head"><div class="section-icon">⚡</div><div class="section-head-text"><h3>Monitored Zaps</h3><p>Zapier automations being tracked by this audit</p></div></div>', unsafe_allow_html=True)
+    # ── Open-in-new-tab fallback + start instructions ─────────────────────
+    st.markdown(f'''
+    <div style="display:flex; gap:12px; align-items:center; margin-top:8px;">
+      <a href="{ZAP_DASHBOARD_URL}" target="_blank"
+         style="background:#3397AC; color:#fff; padding:8px 14px; border-radius:6px;
+                text-decoration:none; font-size:13px; font-weight:600;">
+        Open in new tab ↗
+      </a>
+      <span style="font-size:12px; color:#6b7a94;">
+        Dashboard not loading? Start the local server first (see below).
+      </span>
+    </div>
+    ''', unsafe_allow_html=True)
 
-        zap_rows = []
-        for r in latest.get("results", []):
-            status = r.get("status", "")
-            db_count = r.get("db_row_count", 0)
-            at_count = r.get("airtable_record_count", 0)
+    with st.expander("ℹ️ How to start the local Zap Audit server", expanded=False):
+        st.markdown('''
+**One-time setup**
 
-            # Derive query run result label
-            if status == "New":
-                query_result = "⏭️ Skipped (New FH)"
-            elif db_count == 0 and at_count == 0:
-                query_result = "🟡 No data found"
-            elif db_count > 0 and at_count > 0:
-                query_result = "✅ Success"
-            elif db_count > 0 and at_count == 0:
-                query_result = "❌ Failed — DB has cases, Airtable empty"
-            elif db_count == 0 and at_count > 0:
-                query_result = "✅ Success (Airtable only)"
-            else:
-                query_result = "⚠️ Unknown"
+```bash
+cd zap-audit-cloud
+npm install
+cp .env.example .env   # then fill in ZAPIER_SESSION, ZAPIER_CSRF, etc.
+```
 
-            zap_rows.append({
-                "Funeral Home": r.get("funeral_home_name", ""),
-                "Parting Pro ID": r.get("parting_pro_id", ""),
-                "Go-Live Date": r.get("go_live_date", "") or "—",
-                "Query Result": query_result,
-                "DB Cases (7–14d)": db_count,
-                "Airtable Records (7d)": at_count,
-                "Status": f"{STATUS_EMOJI.get(status, '')} {status}",
-                "Notes": r.get("notes", "") or "—",
-                "Last Checked": run_date,
-            })
-        zap_df = pd.DataFrame(zap_rows)
+**Every time you want to use it**
 
-        zap_col1, zap_col2 = st.columns([3, 2])
-        with zap_col1:
-            zap_search = st.text_input("Search", key="monitored_zap_search", placeholder="Search funeral home…")
-        with zap_col2:
-            success_count = sum(1 for r in zap_rows if "✅" in r["Query Result"])
-            fail_count = sum(1 for r in zap_rows if "❌" in r["Query Result"])
-            skip_count = sum(1 for r in zap_rows if "⏭️" in r["Query Result"])
-            st.markdown(f"""
-            <div style="margin-top:28px; font-size:13px; color:#4a5568;">
-                <strong>{len(zap_df)}</strong> monitored &nbsp;·&nbsp;
-                ✅ {success_count} success &nbsp;·&nbsp;
-                ❌ {fail_count} failed &nbsp;·&nbsp;
-                ⏭️ {skip_count} skipped
-            </div>
-            """, unsafe_allow_html=True)
+```bash
+cd zap-audit-cloud
+npm start
+```
 
-        if zap_search:
-            zap_df = zap_df[zap_df["Funeral Home"].str.contains(zap_search, case=False, na=False)]
+The dashboard then runs at <http://localhost:3000>. Refresh this page once it's up and the embedded view will load.
 
-        st.dataframe(zap_df, use_container_width=True, hide_index=True)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # ── Query Zaps — Zap-by-Zap Style ────────────────────────────────
-        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-        st.markdown('<div class="section-head"><div class="section-icon">⚡</div><div class="section-head-text"><h3>Query Zaps — Zap-by-Zap Breakdown</h3><p>Only "Query Data to upload in Airtable" zaps · stats across all audit runs</p></div></div>', unsafe_allow_html=True)
-
-        # Aggregate stats across ALL historical runs per FH
-        qzb_stats = {}  # ppid → {title, total, success, halted, filtered, errors}
-        for run in runs:
-            for r in run.get("results", []):
-                ppid     = r.get("parting_pro_id", 0)
-                fh_name  = r.get("funeral_home_name", "")
-                db_count = r.get("db_row_count", 0)
-                at_count = r.get("airtable_record_count", 0)
-                status   = r.get("status", "")
-
-                if ppid not in qzb_stats:
-                    qzb_stats[ppid] = {
-                        "Zap Title": f"{fh_name} - Query Data to upload in airtable - funeral_home_id = {ppid}",
-                        "Total Runs": 0, "Success": 0, "Errors": 0,
-                        "Halted": 0, "Filtered": 0, "Throttled": 0,
-                    }
-
-                s = qzb_stats[ppid]
-                s["Total Runs"] += 1
-                if status == "New":
-                    pass  # don't count skipped runs
-                elif db_count == 0:
-                    s["Filtered"] += 1
-                elif db_count > 0 and at_count > 0:
-                    s["Success"] += 1
-                elif db_count > 0 and at_count == 0:
-                    s["Halted"] += 1
-                else:
-                    s["Errors"] += 1
-
-        qzb_rows = []
-        for ppid, s in sorted(qzb_stats.items(), key=lambda x: x[1]["Zap Title"]):
-            total = s["Total Runs"]
-            succ  = s["Success"]
-            err   = s["Errors"]
-            error_rate   = f"{(err / total * 100):.1f}%" if total > 0 else "0.0%"
-            success_rate = f"{(succ / total * 100):.1f}%" if total > 0 else "0.0%"
-            qzb_rows.append({
-                "Zap Title":    s["Zap Title"],
-                "Total Runs":   total,
-                "Success":      succ,
-                "Errors":       err,
-                "Halted":       s["Halted"],
-                "Filtered":     s["Filtered"],
-                "Throttled":    s["Throttled"],
-                "Error Rate":   error_rate,
-                "Success Rate": success_rate,
-            })
-
-        qzb_df = pd.DataFrame(qzb_rows)
-
-        qzb_search = st.text_input("Search zap", key="qzb_search", placeholder="Search funeral home…")
-        if qzb_search:
-            qzb_df = qzb_df[qzb_df["Zap Title"].str.contains(qzb_search, case=False, na=False)]
-
-        st.dataframe(qzb_df, use_container_width=True, hide_index=True)
-        st.caption(
-            f"{len(qzb_df)} query zaps  ·  "
-            f"✅ {sum(s['Success'] for s in qzb_stats.values())} success  ·  "
-            f"🛑 {sum(s['Halted'] for s in qzb_stats.values())} halted  ·  "
-            f"🟡 {sum(s['Filtered'] for s in qzb_stats.values())} filtered  ·  "
-            f"❌ {sum(s['Errors'] for s in qzb_stats.values())} errors"
-        )
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # ── Full results table ────────────────────────────────────────────
-        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-        st.markdown('<div class="section-head"><div class="section-icon">📋</div><div class="section-head-text"><h3>All Funeral Homes</h3><p>Filter by status to focus on what needs attention</p></div></div>', unsafe_allow_html=True)
-
-        col_filter, col_search = st.columns([2, 3])
-        with col_filter:
-            status_filter = st.multiselect(
-                "Filter by status",
-                options=["Healthy", "No Cases", "Missing Data", "Dead", "New"],
-                default=["Missing Data", "Dead"],
-                key="zap_status_filter"
-            )
-        with col_search:
-            search = st.text_input("Search funeral home", key="zap_search", placeholder="Type to search…")
-
-        filtered = df.copy()
-        if status_filter:
-            filtered = filtered[filtered["Status"].isin(status_filter)]
-        if search:
-            filtered = filtered[filtered["Funeral Home"].str.contains(search, case=False, na=False)]
-
-        def _color_status(val):
-            color = STATUS_COLOR.get(val, "#4a5568")
-            return f"color: {color}; font-weight: 600;"
-
-        if not filtered.empty:
-            st.dataframe(
-                filtered.style.applymap(_color_status, subset=["Status"]),
-                use_container_width=True,
-                hide_index=True
-            )
-            st.caption(f"{len(filtered)} of {len(df)} funeral homes shown")
-        else:
-            st.info("No records match the current filter.")
-
-        st.markdown('</div>', unsafe_allow_html=True)
-
-        # ── History (if multiple runs) ────────────────────────────────────
-        if len(runs) > 1:
-            st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
-            st.markdown('<div class="section-head"><div class="section-icon">📈</div><div class="section-head-text"><h3>Audit History</h3><p>Status counts over time</p></div></div>', unsafe_allow_html=True)
-
-            history_rows = []
-            for run in runs[:30]:
-                s = run.get("summary", {})
-                history_rows.append({
-                    "Date": run.get("run_date", ""),
-                    "Healthy": s.get("healthy", 0),
-                    "No Cases": s.get("no_cases", 0),
-                    "Missing Data": s.get("missing_data", 0),
-                    "Dead": s.get("dead", 0),
-                    "New": s.get("new_fh", 0),
-                })
-            hist_df = pd.DataFrame(history_rows).set_index("Date")
-            st.line_chart(hist_df[["Healthy", "Missing Data", "Dead"]])
-            st.markdown('</div>', unsafe_allow_html=True)
-
-        # ── Download ─────────────────────────────────────────────────────
-        csv = df.to_csv(index=False)
-        st.download_button(
-            "⬇️ Download Audit Report (.csv)",
-            csv, f"zap_audit_{run_date}.csv", mime="text/csv"
-        )
+> **Heads-up:** the iframe above only works in the browser session on the machine running `npm start`. If you're viewing the Streamlit app from a different computer, click **Open in new tab** to use that machine's own local server, or just use the cloud-hosted dashboard URL once it's deployed.
+        ''')
 
 # ── Onboarding log renderer ───────────────────────────────────────────────────
 def _render_log_line(content: str):
