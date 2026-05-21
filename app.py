@@ -677,13 +677,6 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
     st.markdown("---")
-    st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Audit Controls</div>", unsafe_allow_html=True)
-    run_phones = st.button("📞  Run Phone Audit", use_container_width=True)
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    run_messages = st.button("💬  Run Message Audit", use_container_width=True)
-    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-    run_zap_audit = st.button("🔍  Run Zap Audit Now", use_container_width=True)
-    st.markdown("---")
     st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:8px;'>Connected Bases</div>", unsafe_allow_html=True)
     for b in BASE_IDS:
         st.markdown(f"<div style='font-size:12px; opacity:0.7; padding: 4px 0;'>• {b}</div>", unsafe_allow_html=True)
@@ -716,6 +709,14 @@ with st.sidebar:
 tab_texting, tab_zap, tab_onboarding, tab_tasks = st.tabs(["📞  Texting Audit", "🔍  Zap Audit", "🚀  Onboarding", "✅  Tasks"])
 
 tab_texting.__enter__()
+
+# ── Audit Controls (Texting tab) ──────────────────────────────────────────────
+_phone_col, _msg_col = st.columns(2)
+with _phone_col:
+    run_phones = st.button("📞  Run Phone Audit", use_container_width=True, key="run_phones_btn")
+with _msg_col:
+    run_messages = st.button("💬  Run Message Audit", use_container_width=True, key="run_messages_btn")
+st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
 # ── Phone Audit ───────────────────────────────────────────────────────────────
 st.markdown("""
@@ -1032,6 +1033,10 @@ tab_texting.__exit__(None, None, None)
 # TAB 2 — Zap Audit
 # ════════════════════════════════════════════════════════════════════════════
 with tab_zap:
+    # ── Audit Controls (Zap tab) ──────────────────────────────────────────
+    run_zap_audit = st.button("🔍  Run Zap Audit Now", use_container_width=True, key="run_zap_audit_btn")
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
     # ── Trigger n8n run ───────────────────────────────────────────────────
     if run_zap_audit:
         with st.spinner("Triggering n8n audit workflow…"):
@@ -1140,7 +1145,7 @@ with tab_zap:
     st.markdown('</div>', unsafe_allow_html=True)
 
     if not runs:
-        st.info("No audit runs yet — click **Run Zap Audit Now** in the sidebar to populate results above.")
+        st.info("No audit runs yet — click **Run Zap Audit Now** above to populate results.")
     else:
         latest = runs[0]
         summary = latest.get("summary", {})
