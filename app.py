@@ -1071,63 +1071,256 @@ st.markdown("""
 tab_texting.__exit__(None, None, None)
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Zap Audit  (embedded zap-audit-cloud dashboard)
+# TAB 2 — Zap Audit  (live dashboard — reads Airtable Zap Run Log)
 # ════════════════════════════════════════════════════════════════════════════
-with tab_zap:
-    import streamlit.components.v1 as _components
+# Architecture:
+#   Each monitored zap → POST to a Webhooks-by-Zapier catch hook → master
+#   Logger zap → Create Record in this Airtable base. We poll Airtable every
+#   10s and render a live status board.
+# ────────────────────────────────────────────────────────────────────────────
 
-    # ── Header ────────────────────────────────────────────────────────────
+# Zap Audit base. Token must be set in Streamlit Cloud secrets (Settings → Secrets):
+#     zap_audit_token = "pat..."
+# Locally, you can put the same line in .streamlit/secrets.toml (gitignored).
+ZAP_AUDIT_BASE_ID  = "appq10XQm3AKQYyYr"
+ZAP_AUDIT_TABLE_ID = "tbleFE2RpNXq1s3S4"
+try:
+    ZAP_AUDIT_TOKEN = st.secrets["zap_audit_token"]
+except Exception:
+    ZAP_AUDIT_TOKEN = ""  # missing-secret message rendered inside the tab
+
+ZAP_STATUS_META = {
+    "success":   ("✅", "#1a9e5c"),
+    "error":     ("❌", "#e05252"),
+    "halted":    ("🛑", "#e07b39"),
+    "held":      ("⏸",  "#e0b939"),
+    "filtered":  ("🚫", "#6b7a94"),
+    "delayed":   ("⏱",  "#3b7de8"),
+    "throttled": ("🐢", "#9b59b6"),
+    "pending":   ("⏳", "#6b7a94"),
+    "stopped":   ("💤", "#8b0000"),
+}
+
+ZAP_WINDOW_OPTIONS = {
+    "Last 1 hour":   timedelta(hours=1),
+    "Last 6 hours":  timedelta(hours=6),
+    "Last 24 hours": timedelta(hours=24),
+    "Last 7 days":   timedelta(days=7),
+}
+
+def _zap_parse_ts(s):
+    """Parse Airtable ISO timestamp ('2026-05-22T15:30:00.000Z') to aware datetime."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+@st.cache_data(ttl=5, show_spinner=False)
+def fetch_zap_runs(limit: int = 500):
+    """Fetch the most recent N runs from Airtable, newest first."""
+    url = f"https://api.airtable.com/v0/{ZAP_AUDIT_BASE_ID}/{ZAP_AUDIT_TABLE_ID}"
+    headers = {"Authorization": f"Bearer {ZAP_AUDIT_TOKEN}"}
+    base_params = {
+        "pageSize": 100,
+        "sort[0][field]": "Timestamp",
+        "sort[0][direction]": "desc",
+    }
+    runs = []
+    offset = None
+    safety = 0
+    while len(runs) < limit and safety < 20:
+        safety += 1
+        params = dict(base_params)
+        if offset:
+            params["offset"] = offset
+        resp = requests.get(url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        for rec in data.get("records", []):
+            f = rec.get("fields", {})
+            status = f.get("Status", "")
+            if isinstance(status, dict):  # singleSelect returned as object
+                status = status.get("name", "")
+            runs.append({
+                "id":          rec.get("id"),
+                "run_id":      f.get("Run ID", ""),
+                "zap_name":    f.get("Zap Name", "") or "(unnamed zap)",
+                "zap_id":      f.get("Zap ID", ""),
+                "status":      str(status).lower(),
+                "timestamp":   f.get("Timestamp"),
+                "step":        f.get("Step (if error)", ""),
+                "error":       f.get("Error Message", ""),
+                "duration_ms": f.get("Duration (ms)", 0) or 0,
+                "task_count":  f.get("Task Count", 0) or 0,
+                "source":      f.get("Logger Source", ""),
+            })
+        offset = data.get("offset")
+        if not offset:
+            break
+    return runs
+
+
+with tab_zap:
+    # ── Header ────────────────────────────────────────────────────────────────
     st.markdown('''
     <div class="section-wrap">
       <div class="section-head">
         <div class="section-icon">⚡</div>
         <div class="section-head-text">
-          <h3>Zap Audit Dashboard</h3>
-          <p>Live dashboard from <code>zap-audit-cloud</code> — full Zapier run history, AI-flagged failures, and per-zap drill-downs.</p>
+          <h3>Zap Audit — Live</h3>
+          <p>Every zap run logs to Airtable; this dashboard reads it back in real time. No cookies, no polling Zapier.</p>
         </div>
       </div>
     </div>
     ''', unsafe_allow_html=True)
 
-    # ── Embedded dashboard (runs on user's local machine at port 3000) ────
-    ZAP_DASHBOARD_URL = "http://localhost:3000"
-    _components.iframe(ZAP_DASHBOARD_URL, height=1100, scrolling=True)
+    # ── Controls ─────────────────────────────────────────────────────────────
+    _ctrl_l, _ctrl_r = st.columns([3, 1])
+    _zap_window_label = _ctrl_l.selectbox(
+        "Time window",
+        list(ZAP_WINDOW_OPTIONS.keys()),
+        index=2,  # default: Last 24 hours
+        key="zap_window_select",
+    )
+    if _ctrl_r.button("🔄 Refresh now", use_container_width=True, key="zap_refresh_btn"):
+        fetch_zap_runs.clear()
+        st.rerun()
 
-    # ── Open-in-new-tab fallback + start instructions ─────────────────────
-    st.markdown(f'''
-    <div style="display:flex; gap:12px; align-items:center; margin-top:8px;">
-      <a href="{ZAP_DASHBOARD_URL}" target="_blank"
-         style="background:#3397AC; color:#fff; padding:8px 14px; border-radius:6px;
-                text-decoration:none; font-size:13px; font-weight:600;">
-        Open in new tab ↗
-      </a>
-      <span style="font-size:12px; color:#6b7a94;">
-        Dashboard not loading? Start the local server first (see below).
-      </span>
-    </div>
-    ''', unsafe_allow_html=True)
+    # ── Live dashboard fragment — auto-refreshes every 10s ───────────────────
+    @st.fragment(run_every="10s")
+    def _render_zap_dashboard():
+        if not ZAP_AUDIT_TOKEN:
+            st.warning(
+                "**Zap Audit token not configured.**  \n"
+                "Add this line to your Streamlit Cloud secrets (Settings → Secrets):  \n\n"
+                "`zap_audit_token = \"pat...\"`  \n\n"
+                "Locally, add the same line to `.streamlit/secrets.toml` (already gitignored)."
+            )
+            return
+        try:
+            runs = fetch_zap_runs(limit=500)
+        except requests.HTTPError as ex:
+            code = ex.response.status_code if ex.response is not None else "?"
+            st.error(f"Couldn't read Zap Run Log (HTTP {code}). Check that the PAT has access to base {ZAP_AUDIT_BASE_ID}.")
+            return
+        except Exception as ex:
+            st.error(f"Couldn't read Zap Run Log: {ex}")
+            return
 
-    with st.expander("ℹ️ How to start the local Zap Audit server", expanded=False):
-        st.markdown('''
-**One-time setup**
+        if not runs:
+            st.info(
+                "No zap runs logged yet. Once a monitored zap fires its webhook step, "
+                "rows will appear here within a few seconds."
+            )
+            return
 
-```bash
-cd zap-audit-cloud
-npm install
-cp .env.example .env   # then fill in ZAPIER_SESSION, ZAPIER_CSRF, etc.
-```
+        # Filter to selected window
+        now = datetime.now(timezone.utc)
+        cutoff = now - ZAP_WINDOW_OPTIONS[_zap_window_label]
+        in_window = []
+        for r in runs:
+            t = _zap_parse_ts(r["timestamp"])
+            if t and t >= cutoff:
+                rr = dict(r)
+                rr["_t"] = t
+                in_window.append(rr)
 
-**Every time you want to use it**
+        # ── Live header ────────────────────────────────────────────────────
+        st.markdown(
+            f"<div style='font-size:12px; color:#6b7a94; margin: 4px 0 12px;'>"
+            f"● <strong style='color:#1a9e5c;'>LIVE</strong> · "
+            f"{len(in_window)} run(s) in window · "
+            f"refreshed {datetime.now().strftime('%H:%M:%S')}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
 
-```bash
-cd zap-audit-cloud
-npm start
-```
+        if not in_window:
+            st.caption(f"No zap runs in {_zap_window_label.lower()}. (Total in Airtable: {len(runs)})")
+            return
 
-The dashboard then runs at <http://localhost:3000>. Refresh this page once it's up and the embedded view will load.
+        # ── Status summary cards ──────────────────────────────────────────
+        counts = {}
+        for r in in_window:
+            counts[r["status"]] = counts.get(r["status"], 0) + 1
 
-> **Heads-up:** the iframe above only works in the browser session on the machine running `npm start`. If you're viewing the Streamlit app from a different computer, click **Open in new tab** to use that machine's own local server, or just use the cloud-hosted dashboard URL once it's deployed.
-        ''')
+        # First row: Total + the 4 most common statuses
+        primary_statuses = ["success", "error", "halted", "held"]
+        cols = st.columns(5)
+        cols[0].metric("Total runs", len(in_window))
+        for i, status in enumerate(primary_statuses, 1):
+            icon = ZAP_STATUS_META.get(status, ("·",))[0]
+            cols[i].metric(f"{icon} {status.title()}", counts.get(status, 0))
+
+        # Second row: other statuses, only if present
+        secondary = [s for s in ("filtered", "delayed", "throttled", "pending", "stopped") if counts.get(s, 0) > 0]
+        if secondary:
+            cols2 = st.columns(len(secondary))
+            for i, status in enumerate(secondary):
+                icon = ZAP_STATUS_META.get(status, ("·",))[0]
+                cols2[i].metric(f"{icon} {status.title()}", counts.get(status, 0))
+
+        # ── Flagged section ──────────────────────────────────────────────
+        flagged = {}
+        for r in in_window:
+            if r["status"] == "error":
+                flagged.setdefault(r["zap_name"], []).append(r)
+        if flagged:
+            st.markdown("#### 🚩 Needs attention")
+            for zap_name, errors in sorted(flagged.items(), key=lambda x: -len(x[1])):
+                recent = errors[0]
+                step = recent["step"] or "unknown step"
+                msg = (recent["error"] or "")[:150]
+                detail = f"_Last error_: **{step}** — {msg}" if msg else f"_Last error_ at {step}"
+                st.error(f"**{zap_name}** — {len(errors)} error(s) in window\n\n{detail}")
+
+        # ── Activity stream (last 30 events) ────────────────────────────
+        st.markdown("#### Recent activity")
+        stream_rows = []
+        for r in in_window[:30]:
+            icon = ZAP_STATUS_META.get(r["status"], ("·",))[0]
+            time_str = r["_t"].astimezone().strftime("%m-%d %H:%M:%S")
+            stream_rows.append({
+                "Time":   time_str,
+                "Status": f"{icon} {r['status']}",
+                "Zap":    r["zap_name"],
+                "Detail": (r["error"] or r["step"] or "")[:80],
+            })
+        st.dataframe(stream_rows, use_container_width=True, hide_index=True)
+
+        # ── Per-zap aggregate table ─────────────────────────────────────
+        st.markdown("#### Zap summary")
+        by_zap = {}
+        for r in in_window:
+            zap = r["zap_name"]
+            if zap not in by_zap:
+                by_zap[zap] = {"name": zap, "total": 0, "last_run": None}
+                for s in ZAP_STATUS_META:
+                    by_zap[zap][s] = 0
+            by_zap[zap]["total"] += 1
+            by_zap[zap][r["status"]] = by_zap[zap].get(r["status"], 0) + 1
+            if by_zap[zap]["last_run"] is None or r["_t"] > by_zap[zap]["last_run"]:
+                by_zap[zap]["last_run"] = r["_t"]
+
+        agg_rows = []
+        for z in sorted(by_zap.values(), key=lambda x: (-x.get("error", 0), -x["total"])):
+            err_rate = (z.get("error", 0) / z["total"] * 100) if z["total"] else 0
+            agg_rows.append({
+                "Zap":      z["name"],
+                "Total":    z["total"],
+                "✅":       z.get("success", 0),
+                "❌":       z.get("error", 0),
+                "🛑":       z.get("halted", 0),
+                "⏸":       z.get("held", 0),
+                "Other":    z["total"] - sum(z.get(s, 0) for s in ("success", "error", "halted", "held")),
+                "Err %":    f"{err_rate:.1f}%" if err_rate else "—",
+                "Last run": z["last_run"].astimezone().strftime("%m-%d %H:%M:%S") if z["last_run"] else "—",
+            })
+        st.dataframe(agg_rows, use_container_width=True, hide_index=True)
+
+    _render_zap_dashboard()
 
 # ── Onboarding log renderer ───────────────────────────────────────────────────
 def _render_log_line(content: str):
