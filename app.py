@@ -1448,133 +1448,224 @@ def _render_log_line(content: str):
 
 
 # ── Onboarding Tab ────────────────────────────────────────────────────────────
-tab_onboarding.__enter__()
-st.write("🔧 DEBUG: Onboarding tab is rendering")
-
-st.markdown("""
-<div class="section-wrap">
-    <div class="section-head">
-        <div class="section-icon">🚀</div>
-        <div class="section-head-text">
-            <h3>Funeral Home Onboarding Automation</h3>
-            <p>Run automated onboarding workflows in the cloud</p>
+with tab_onboarding:
+    st.markdown("""
+    <div class="section-wrap">
+        <div class="section-head">
+            <div class="section-icon">🚀</div>
+            <div class="section-head-text">
+                <h3>Funeral Home Onboarding Automation</h3>
+                <p>Run automated onboarding workflows in the cloud</p>
+            </div>
         </div>
     </div>
-</div>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
-# Initialize session state for onboarding
-if "onboarding" not in st.session_state:
-    st.session_state.onboarding = None
-if "onboarding_step" not in st.session_state:
-    st.session_state.onboarding_step = None
-if "onboarding_output" not in st.session_state:
-    st.session_state.onboarding_output = []
-if "onboarding_input" not in st.session_state:
-    st.session_state.onboarding_input = ""
-
-# ── How to Use ────────────────────────────────────────────────────────────────
-st.info(
-    "**How to use:**  Select a step from the dropdown and click **▶️ Start Step**. "
-    "Steps must be run **in order (1 → 6)** for each new funeral home. "
-    "The automation will ask you questions — type your answer and press **Send**, "
-    "or use the **Yes / No** buttons for confirmation prompts. "
-    "Do not close or navigate away while a step is running."
-)
-
-st.warning(
-    "⚠️ **Make sure you're working on the correct funeral home** before starting. "
-    "Each step makes live changes in Airtable, Twilio, and Zapier."
-)
-
-# Build display list: skip Step 6 (QA/inactive), renumber Step 7 → display 6
-_display_steps = []
-_disp_num = 1
-for s in STEPS:
-    if s["key"] == "6":
-        continue
-    _display_steps.append({**s, "display_num": str(_disp_num)})
-    _disp_num += 1
-# Map display label → actual Node.js step key
-_step_option_map = {
-    f"{s['emoji']} Step {s['display_num']} – {s['title']}": s["key"]
-    for s in _display_steps
-}
-
-col_step, col_action = st.columns([3, 1])
-
-with col_step:
-    selected_step = st.selectbox(
-        "Select Onboarding Step",
-        options=list(_step_option_map.keys()),
-        help="Choose which onboarding step to run for the current funeral home"
-    )
-    step_key = _step_option_map[selected_step]  # actual key sent to Node.js
-
-    # Show description for the selected step
-    step_meta = next((s for s in STEPS if s["key"] == step_key), None)
-    if step_meta:
-        st.caption(f"📋 {step_meta['description']}")
-
-with col_action:
-    st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
-    can_start = st.session_state.onboarding is None or not st.session_state.onboarding.is_running()
-    _start_help = "A step is already running — finish or cancel it first" if not can_start else None
-    if st.button("▶️ Start Step", use_container_width=True, disabled=not can_start, help=_start_help):
-        ob = OnboardingAutomation()
-        st.session_state.onboarding = ob
-        st.session_state.onboarding_step = step_key
+    # Initialize session state for onboarding
+    if "onboarding" not in st.session_state:
+        st.session_state.onboarding = None
+    if "onboarding_step" not in st.session_state:
+        st.session_state.onboarding_step = None
+    if "onboarding_output" not in st.session_state:
         st.session_state.onboarding_output = []
-        try:
-            with st.spinner(f"Running Step {step_key}…"):
-                ob.start_step(step_key)
-                # Wait up to 15 s for the first interactive prompt
-                deadline = time.time() + 15
-                while time.time() < deadline:
-                    msg = ob.get_output()
-                    if msg is None:
-                        time.sleep(0.15)
-                        continue
-                    t = msg.get("t")
-                    if t == "log":
-                        st.session_state.onboarding_output.append(("log", msg.get("m", "")))
-                    elif t == "ask":
-                        st.session_state.onboarding_output.append(("ask", msg.get("q", "")))
-                        break
-                    elif t == "done":
-                        st.session_state.onboarding_output.append(("done", "✅ Step completed!"))
-                        st.session_state.onboarding = None
-                        break
-                    elif t == "error":
-                        st.session_state.onboarding_output.append(("error", msg.get("m", "Unknown error")))
-                        st.session_state.onboarding = None
-                        break
-            st.rerun()
-        except Exception as e:
-            st.error(f"❌ Failed to start onboarding: {str(e)}")
-            st.session_state.onboarding = None
+    if "onboarding_input" not in st.session_state:
+        st.session_state.onboarding_input = ""
 
-st.markdown("---")
-
-# Display onboarding process
-if st.session_state.onboarding and st.session_state.onboarding.is_running():
-    active_step = st.session_state.get("onboarding_step", "?")
-    active_meta = next((s for s in STEPS if s["key"] == active_step), None)
-    active_title = active_meta["title"] if active_meta else f"Step {active_step}"
-    st.markdown(
-        f"<div style='background:#1e3a5f;border-left:4px solid #4a9eff;padding:10px 16px;"
-        f"border-radius:4px;margin-bottom:12px;'>"
-        f"<strong style='color:#4a9eff'>⚙️ Running:</strong> "
-        f"<span style='color:#e0e0e0'>Step {active_step} – {active_title}</span>"
-        f"</div>",
-        unsafe_allow_html=True
+    # ── How to Use ────────────────────────────────────────────────────────────────
+    st.info(
+        "**How to use:**  Select a step from the dropdown and click **▶️ Start Step**. "
+        "Steps must be run **in order (1 → 6)** for each new funeral home. "
+        "The automation will ask you questions — type your answer and press **Send**, "
+        "or use the **Yes / No** buttons for confirmation prompts. "
+        "Do not close or navigate away while a step is running."
     )
 
-    output_container = st.container()
-    input_container = st.container()
+    st.warning(
+        "⚠️ **Make sure you're working on the correct funeral home** before starting. "
+        "Each step makes live changes in Airtable, Twilio, and Zapier."
+    )
 
-    # Display all accumulated output
-    with output_container:
+    # Build display list: skip Step 6 (QA/inactive), renumber Step 7 → display 6
+    _display_steps = []
+    _disp_num = 1
+    for s in STEPS:
+        if s["key"] == "6":
+            continue
+        _display_steps.append({**s, "display_num": str(_disp_num)})
+        _disp_num += 1
+    # Map display label → actual Node.js step key
+    _step_option_map = {
+        f"{s['emoji']} Step {s['display_num']} – {s['title']}": s["key"]
+        for s in _display_steps
+    }
+
+    col_step, col_action = st.columns([3, 1])
+
+    with col_step:
+        selected_step = st.selectbox(
+            "Select Onboarding Step",
+            options=list(_step_option_map.keys()),
+            help="Choose which onboarding step to run for the current funeral home"
+        )
+        step_key = _step_option_map[selected_step]  # actual key sent to Node.js
+
+        # Show description for the selected step
+        step_meta = next((s for s in STEPS if s["key"] == step_key), None)
+        if step_meta:
+            st.caption(f"📋 {step_meta['description']}")
+
+    with col_action:
+        st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
+        can_start = st.session_state.onboarding is None or not st.session_state.onboarding.is_running()
+        _start_help = "A step is already running — finish or cancel it first" if not can_start else None
+        if st.button("▶️ Start Step", use_container_width=True, disabled=not can_start, help=_start_help):
+            ob = OnboardingAutomation()
+            st.session_state.onboarding = ob
+            st.session_state.onboarding_step = step_key
+            st.session_state.onboarding_output = []
+            try:
+                with st.spinner(f"Running Step {step_key}…"):
+                    ob.start_step(step_key)
+                    # Wait up to 15 s for the first interactive prompt
+                    deadline = time.time() + 15
+                    while time.time() < deadline:
+                        msg = ob.get_output()
+                        if msg is None:
+                            time.sleep(0.15)
+                            continue
+                        t = msg.get("t")
+                        if t == "log":
+                            st.session_state.onboarding_output.append(("log", msg.get("m", "")))
+                        elif t == "ask":
+                            st.session_state.onboarding_output.append(("ask", msg.get("q", "")))
+                            break
+                        elif t == "done":
+                            st.session_state.onboarding_output.append(("done", "✅ Step completed!"))
+                            st.session_state.onboarding = None
+                            break
+                        elif t == "error":
+                            st.session_state.onboarding_output.append(("error", msg.get("m", "Unknown error")))
+                            st.session_state.onboarding = None
+                            break
+                st.rerun()
+            except Exception as e:
+                st.error(f"❌ Failed to start onboarding: {str(e)}")
+                st.session_state.onboarding = None
+
+    st.markdown("---")
+
+    # Display onboarding process
+    if st.session_state.onboarding and st.session_state.onboarding.is_running():
+        active_step = st.session_state.get("onboarding_step", "?")
+        active_meta = next((s for s in STEPS if s["key"] == active_step), None)
+        active_title = active_meta["title"] if active_meta else f"Step {active_step}"
+        st.markdown(
+            f"<div style='background:#1e3a5f;border-left:4px solid #4a9eff;padding:10px 16px;"
+            f"border-radius:4px;margin-bottom:12px;'>"
+            f"<strong style='color:#4a9eff'>⚙️ Running:</strong> "
+            f"<span style='color:#e0e0e0'>Step {active_step} – {active_title}</span>"
+            f"</div>",
+            unsafe_allow_html=True
+        )
+
+        output_container = st.container()
+        input_container = st.container()
+
+        # Display all accumulated output
+        with output_container:
+            for msg_type, content in st.session_state.onboarding_output:
+                if msg_type == "log":
+                    _render_log_line(content)
+                elif msg_type == "ask":
+                    st.markdown(
+                        f"<div style='background:#fffbeb;border-left:4px solid #f59e0b;"
+                        f"padding:10px 14px;border-radius:4px;margin:8px 0;"
+                        f"font-size:14px;color:#92400e'>"
+                        f"<strong>❓ Input needed:</strong> {content}</div>",
+                        unsafe_allow_html=True
+                    )
+                elif msg_type == "done":
+                    st.success(content)
+                elif msg_type == "error":
+                    st.error(f"❌ {content}")
+
+        # Input field for answers
+        with input_container:
+            last_msg = st.session_state.onboarding_output[-1] if st.session_state.onboarding_output else None
+            if last_msg and last_msg[0] == "ask":
+                st.caption("💡 Type a number to select from a list, or type **y** / **n** for yes/no questions. Use the buttons below as shortcuts.")
+                prefill = st.session_state.pop("_prefill_answer", "")
+                user_input = st.text_input("Your response:", value=prefill, key="onboarding_response",
+                                           placeholder="Type your answer here…")
+                col_send, col_yn, col_cancel = st.columns([2, 1, 1])
+                with col_send:
+                    if st.button("Send ➤", use_container_width=True):
+                        if user_input.strip():
+                            try:
+                                ob = st.session_state.onboarding
+                                ob.send_answer(user_input)
+                                with st.spinner("Waiting for next prompt…"):
+                                    deadline = time.time() + 15
+                                    while time.time() < deadline:
+                                        msg = ob.get_output()
+                                        if msg is None:
+                                            time.sleep(0.15)
+                                            continue
+                                        t = msg.get("t")
+                                        if t == "log":
+                                            st.session_state.onboarding_output.append(("log", msg.get("m", "")))
+                                        elif t == "ask":
+                                            st.session_state.onboarding_output.append(("ask", msg.get("q", "")))
+                                            break
+                                        elif t == "done":
+                                            st.session_state.onboarding_output.append(("done", "✅ Step completed!"))
+                                            st.session_state.onboarding = None
+                                            break
+                                        elif t == "error":
+                                            st.session_state.onboarding_output.append(("error", msg.get("m", "Unknown error")))
+                                            st.session_state.onboarding = None
+                                            break
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to send answer: {str(e)}")
+                with col_yn:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("✅ Yes", use_container_width=True, key="btn_yes",
+                                     help="Sends 'y' — use for yes/no confirmation prompts"):
+                            st.session_state["_prefill_answer"] = "y"
+                            st.rerun()
+                    with c2:
+                        if st.button("❌ No", use_container_width=True, key="btn_no",
+                                     help="Sends 'n' — use for yes/no confirmation prompts"):
+                            st.session_state["_prefill_answer"] = "n"
+                            st.rerun()
+                with col_cancel:
+                    if st.button("🛑 Cancel", use_container_width=True, key="btn_cancel",
+                                 help="Stop the current step and discard progress"):
+                        ob = st.session_state.onboarding
+                        if ob:
+                            ob.stop()
+                        st.session_state.onboarding = None
+                        st.session_state.onboarding_output = []
+                        st.warning("Step cancelled.")
+                        st.rerun()
+    elif st.session_state.onboarding_output:
+        st.markdown("""
+        <div class="section-wrap">
+            <div class="section-head">
+                <div class="section-icon">✅</div>
+                <div class="section-head-text">
+                    <h3>Step Complete</h3>
+                    <p>Process finished successfully</p>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.info("🎉 The onboarding step has been completed. You can start another step above or review the output below.")
+
+        st.markdown("**Process Output:**")
         for msg_type, content in st.session_state.onboarding_output:
             if msg_type == "log":
                 _render_log_line(content)
@@ -1583,7 +1674,7 @@ if st.session_state.onboarding and st.session_state.onboarding.is_running():
                     f"<div style='background:#fffbeb;border-left:4px solid #f59e0b;"
                     f"padding:10px 14px;border-radius:4px;margin:8px 0;"
                     f"font-size:14px;color:#92400e'>"
-                    f"<strong>❓ Input needed:</strong> {content}</div>",
+                    f"<strong>❓</strong> {content}</div>",
                     unsafe_allow_html=True
                 )
             elif msg_type == "done":
@@ -1591,120 +1682,25 @@ if st.session_state.onboarding and st.session_state.onboarding.is_running():
             elif msg_type == "error":
                 st.error(f"❌ {content}")
 
-    # Input field for answers
-    with input_container:
-        last_msg = st.session_state.onboarding_output[-1] if st.session_state.onboarding_output else None
-        if last_msg and last_msg[0] == "ask":
-            st.caption("💡 Type a number to select from a list, or type **y** / **n** for yes/no questions. Use the buttons below as shortcuts.")
-            prefill = st.session_state.pop("_prefill_answer", "")
-            user_input = st.text_input("Your response:", value=prefill, key="onboarding_response",
-                                       placeholder="Type your answer here…")
-            col_send, col_yn, col_cancel = st.columns([2, 1, 1])
-            with col_send:
-                if st.button("Send ➤", use_container_width=True):
-                    if user_input.strip():
-                        try:
-                            ob = st.session_state.onboarding
-                            ob.send_answer(user_input)
-                            with st.spinner("Waiting for next prompt…"):
-                                deadline = time.time() + 15
-                                while time.time() < deadline:
-                                    msg = ob.get_output()
-                                    if msg is None:
-                                        time.sleep(0.15)
-                                        continue
-                                    t = msg.get("t")
-                                    if t == "log":
-                                        st.session_state.onboarding_output.append(("log", msg.get("m", "")))
-                                    elif t == "ask":
-                                        st.session_state.onboarding_output.append(("ask", msg.get("q", "")))
-                                        break
-                                    elif t == "done":
-                                        st.session_state.onboarding_output.append(("done", "✅ Step completed!"))
-                                        st.session_state.onboarding = None
-                                        break
-                                    elif t == "error":
-                                        st.session_state.onboarding_output.append(("error", msg.get("m", "Unknown error")))
-                                        st.session_state.onboarding = None
-                                        break
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to send answer: {str(e)}")
-            with col_yn:
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("✅ Yes", use_container_width=True, key="btn_yes",
-                                 help="Sends 'y' — use for yes/no confirmation prompts"):
-                        st.session_state["_prefill_answer"] = "y"
-                        st.rerun()
-                with c2:
-                    if st.button("❌ No", use_container_width=True, key="btn_no",
-                                 help="Sends 'n' — use for yes/no confirmation prompts"):
-                        st.session_state["_prefill_answer"] = "n"
-                        st.rerun()
-            with col_cancel:
-                if st.button("🛑 Cancel", use_container_width=True, key="btn_cancel",
-                             help="Stop the current step and discard progress"):
-                    ob = st.session_state.onboarding
-                    if ob:
-                        ob.stop()
-                    st.session_state.onboarding = None
-                    st.session_state.onboarding_output = []
-                    st.warning("Step cancelled.")
-                    st.rerun()
-elif st.session_state.onboarding_output:
-    st.markdown("""
-    <div class="section-wrap">
-        <div class="section-head">
-            <div class="section-icon">✅</div>
-            <div class="section-head-text">
-                <h3>Step Complete</h3>
-                <p>Process finished successfully</p>
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+        if st.button("Clear Output", use_container_width=True):
+            st.session_state.onboarding_output = []
+            st.rerun()
+    else:
+        st.markdown("#### 🗂️ Step Overview")
+        st.caption("Run steps in order for each new funeral home. Click a step number in the dropdown above to select it, then press **▶️ Start Step**.")
 
-    st.info("🎉 The onboarding step has been completed. You can start another step above or review the output below.")
-
-    st.markdown("**Process Output:**")
-    for msg_type, content in st.session_state.onboarding_output:
-        if msg_type == "log":
-            _render_log_line(content)
-        elif msg_type == "ask":
+        for step in _display_steps:
             st.markdown(
-                f"<div style='background:#fffbeb;border-left:4px solid #f59e0b;"
-                f"padding:10px 14px;border-radius:4px;margin:8px 0;"
-                f"font-size:14px;color:#92400e'>"
-                f"<strong>❓</strong> {content}</div>",
+                f"<div style='display:flex;align-items:center;gap:14px;padding:10px 16px;"
+                f"border-left:4px solid #3b82f6;background:#eff6ff;"
+                f"border-radius:6px;margin-bottom:8px;'>"
+                f"<span style='font-size:22px;min-width:28px'>{step['emoji']}</span>"
+                f"<div>"
+                f"<strong style='color:#1e40af;font-size:14px'>Step {step['display_num']}: {step['title']}</strong><br>"
+                f"<span style='font-size:12px;color:#3b82f6'>{step['description']}</span>"
+                f"</div></div>",
                 unsafe_allow_html=True
             )
-        elif msg_type == "done":
-            st.success(content)
-        elif msg_type == "error":
-            st.error(f"❌ {content}")
-
-    if st.button("Clear Output", use_container_width=True):
-        st.session_state.onboarding_output = []
-        st.rerun()
-else:
-    st.markdown("#### 🗂️ Step Overview")
-    st.caption("Run steps in order for each new funeral home. Click a step number in the dropdown above to select it, then press **▶️ Start Step**.")
-
-    for step in _display_steps:
-        st.markdown(
-            f"<div style='display:flex;align-items:center;gap:14px;padding:10px 16px;"
-            f"border-left:4px solid #3b82f6;background:#eff6ff;"
-            f"border-radius:6px;margin-bottom:8px;'>"
-            f"<span style='font-size:22px;min-width:28px'>{step['emoji']}</span>"
-            f"<div>"
-            f"<strong style='color:#1e40af;font-size:14px'>Step {step['display_num']}: {step['title']}</strong><br>"
-            f"<span style='font-size:12px;color:#3b82f6'>{step['description']}</span>"
-            f"</div></div>",
-            unsafe_allow_html=True
-        )
-
-tab_onboarding.__exit__(None, None, None)
 
 # ════════════════════════════════════════════════════════════════════════════
 # TAB 4 — Task Tracker
