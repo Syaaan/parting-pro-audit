@@ -1109,11 +1109,14 @@ ZAP_WINDOW_OPTIONS = {
 }
 
 def _zap_parse_ts(s):
-    """Parse Airtable ISO timestamp ('2026-05-22T15:30:00.000Z') to aware datetime."""
+    """Parse Airtable ISO timestamp to timezone-aware datetime (UTC if no tz info)."""
     if not s:
         return None
     try:
-        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except Exception:
         return None
 
