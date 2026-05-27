@@ -1188,8 +1188,7 @@ with tab_zap:
         fetch_zap_runs.clear()
         st.rerun()
 
-    # ── Live dashboard fragment — auto-refreshes every 10s ───────────────────
-    @st.fragment(run_every="10s")
+    # ── Live dashboard — rendered inline (use Refresh button to update) ──────
     def _render_zap_dashboard():
         if not ZAP_AUDIT_TOKEN:
             st.warning(
