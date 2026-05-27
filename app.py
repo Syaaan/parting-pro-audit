@@ -1449,6 +1449,7 @@ def _render_log_line(content: str):
 
 # ── Onboarding Tab ────────────────────────────────────────────────────────────
 tab_onboarding.__enter__()
+st.write("🔧 DEBUG: Onboarding tab is rendering")
 
 st.markdown("""
 <div class="section-wrap">
