@@ -1629,52 +1629,28 @@ def render_onboarding():
             unsafe_allow_html=True
         )
 
-        output_container = st.container()
+        # Current question + answer box render first, right under the "Running"
+        # banner, so they're visible without scrolling past the full log below.
         input_container = st.container()
-
-        # Display all accumulated output
-        with output_container:
-            for msg_type, content in st.session_state.onboarding_output:
-                if msg_type == "log":
-                    _render_log_line(content)
-                elif msg_type == "ask":
-                    st.markdown(
-                        f"<div style='background:#fffbeb;border-left:4px solid #f59e0b;"
-                        f"padding:10px 14px;border-radius:4px;margin:8px 0;"
-                        f"font-size:14px;color:#92400e'>"
-                        f"<strong>❓ Input needed:</strong> {content}</div>",
-                        unsafe_allow_html=True
-                    )
-                elif msg_type == "done":
-                    st.success(content)
-                elif msg_type == "error":
-                    st.error(f"❌ {content}")
+        output_container = st.container()
 
         # Input field for answers
         with input_container:
             last_msg = st.session_state.onboarding_output[-1] if st.session_state.onboarding_output else None
             if last_msg and last_msg[0] == "ask":
                 question = last_msg[1]
+                st.markdown(
+                    f"<div style='background:#fffbeb;border-left:4px solid #f59e0b;"
+                    f"padding:10px 14px;border-radius:4px;margin-bottom:8px;"
+                    f"font-size:14px;color:#92400e'>"
+                    f"<strong>❓ Input needed:</strong> {question}</div>",
+                    unsafe_allow_html=True
+                )
                 is_yesno = question.rstrip().endswith("(y/n)")
 
-                # Numbered-list prompts (e.g. "Enter number to select") are
-                # preceded by a single log message full of "[N] label" lines
-                # (see pick_funeral_home in onboarding_automation.py) — pull
-                # those out so we can offer them as click-to-fill buttons
-                # instead of making the user scroll up to find the number.
-                list_options = []
-                if not is_yesno:
-                    history = st.session_state.onboarding_output
-                    if len(history) >= 2 and history[-2][0] == "log":
-                        list_options = re.findall(r"^\s*\[(\d+)\]\s+(.+?)\s*$", history[-2][1], re.MULTILINE)
-                has_back_option = bool(list_options) and bool(re.search(r"\b0\b", question))
-
-                if is_yesno:
-                    hint = "💡 Type **y** / **n**, or use the Yes/No buttons below."
-                elif list_options:
-                    hint = "💡 Click an option below, or type its number."
-                else:
-                    hint = "💡 Type your answer below."
+                hint = ("💡 Type **y** / **n**, or use the Yes/No buttons below."
+                        if is_yesno else
+                        "💡 Type your answer below (e.g. a list number, or 0 to go back).")
                 st.caption(hint)
 
                 prefill = st.session_state.pop("_prefill_answer", "")
@@ -1723,9 +1699,7 @@ def render_onboarding():
                         st.warning("Step cancelled.")
                         st.rerun()
 
-                # ── Suggested input — contextual to this step's question ────
                 if is_yesno:
-                    st.caption("Suggested:")
                     c1, c2 = st.columns(2)
                     with c1:
                         if st.button("✅ Yes", use_container_width=True, key="btn_yes"):
@@ -1735,20 +1709,26 @@ def render_onboarding():
                         if st.button("❌ No", use_container_width=True, key="btn_no"):
                             st.session_state["_prefill_answer"] = "n"
                             st.rerun()
-                elif list_options:
-                    st.caption("Suggested:")
-                    display_options = list(list_options)
-                    if has_back_option:
-                        display_options.append(("0", "Go back"))
-                    per_row = 2
-                    for i in range(0, len(display_options), per_row):
-                        row_cols = st.columns(per_row)
-                        for col, (num, label) in zip(row_cols, display_options[i:i + per_row]):
-                            with col:
-                                short_label = label if len(label) <= 60 else label[:57] + "…"
-                                if st.button(f"{num} — {short_label}", use_container_width=True, key=f"btn_opt_{num}"):
-                                    st.session_state["_prefill_answer"] = num
-                                    st.rerun()
+
+        # Full transcript, for scrollback — shown below the answer box instead
+        # of above it, so the box doesn't keep sliding down as this grows.
+        with output_container:
+            st.markdown("---")
+            for msg_type, content in st.session_state.onboarding_output:
+                if msg_type == "log":
+                    _render_log_line(content)
+                elif msg_type == "ask":
+                    st.markdown(
+                        f"<div style='background:#fffbeb;border-left:4px solid #f59e0b;"
+                        f"padding:10px 14px;border-radius:4px;margin:8px 0;"
+                        f"font-size:14px;color:#92400e'>"
+                        f"<strong>❓ Input needed:</strong> {content}</div>",
+                        unsafe_allow_html=True
+                    )
+                elif msg_type == "done":
+                    st.success(content)
+                elif msg_type == "error":
+                    st.error(f"❌ {content}")
     elif st.session_state.onboarding_output:
         st.markdown("""
         <div class="section-wrap">
