@@ -258,19 +258,37 @@ _DARK = bool(st.session_state["dark_mode"])
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700,900&display=swap');
+
+/* Parting Pro brand palette — pulled from partingpro.com's theme (style.css --*-color vars) */
+:root {
+    --pp-dark: #0B0F31;
+    --pp-dark-mid: #142352;
+    --pp-text: #333864;
+    --pp-accent: #0D6DA3;
+    --pp-accent-hover: #1B7BB1;
+    --pp-blue: #166AE8;
+    --pp-accent-tint: #E6F2F8;
+    --pp-green: #1B9E6B;
+    --pp-error: #FB3D3D;
+    --pp-orange: #E26514;
+    --pp-warning: #f9c127;
+    --pp-border: #E3E5E9;
+    --pp-bg: #F3F7FA;
+}
 
 html, body, [class*="css"] {
-    font-family: 'Inter', sans-serif;
+    font-family: 'Satoshi', 'Inter', sans-serif;
 }
 
 /* Hide default streamlit header */
 #MainMenu, footer, header { visibility: hidden; }
 
-.stApp { background: #f0f2f7; }
+.stApp { background: var(--pp-bg); }
 
 /* ── Hero ── */
 .hero {
-    background: linear-gradient(135deg, #1a2b4a 0%, #243860 60%, #2e4a7a 100%);
+    background: linear-gradient(135deg, var(--pp-dark) 0%, var(--pp-dark-mid) 55%, var(--pp-accent) 140%);
     border-radius: 16px;
     padding: 48px 56px;
     margin-bottom: 32px;
@@ -279,7 +297,7 @@ html, body, [class*="css"] {
     justify-content: space-between;
     position: relative;
     overflow: hidden;
-    box-shadow: 0 8px 32px rgba(26,43,74,0.18);
+    box-shadow: 0 8px 32px rgba(11,15,49,0.22);
 }
 .hero::before {
     content: '';
@@ -337,7 +355,7 @@ html, body, [class*="css"] {
 .card-title {
     font-size: 15px;
     font-weight: 600;
-    color: #1a2b4a;
+    color: var(--pp-text);
     margin-bottom: 16px;
     display: flex;
     align-items: center;
@@ -365,7 +383,7 @@ html, body, [class*="css"] {
 .metric .m-value {
     font-size: 36px;
     font-weight: 700;
-    color: #1a2b4a;
+    color: var(--pp-text);
     line-height: 1;
 }
 .metric .m-sub {
@@ -373,9 +391,9 @@ html, body, [class*="css"] {
     color: #4a5568;
     margin-top: 4px;
 }
-.metric.green .m-value { color: #1a9e5c; }
-.metric.red .m-value { color: #e05252; }
-.metric.blue .m-value { color: #3b7de8; }
+.metric.green .m-value { color: var(--pp-green); }
+.metric.red .m-value { color: var(--pp-error); }
+.metric.blue .m-value { color: var(--pp-accent); }
 
 /* ── Section Headers ── */
 .section-wrap {
@@ -396,7 +414,7 @@ html, body, [class*="css"] {
 }
 .section-icon {
     width: 40px; height: 40px;
-    background: #eef2ff;
+    background: var(--pp-accent-tint);
     border-radius: 10px;
     display: flex; align-items: center; justify-content: center;
     font-size: 20px;
@@ -404,7 +422,7 @@ html, body, [class*="css"] {
 .section-head-text h3 {
     font-size: 17px;
     font-weight: 650;
-    color: #1a2b4a;
+    color: var(--pp-text);
     margin: 0 0 2px 0;
 }
 .section-head-text p {
@@ -418,8 +436,8 @@ html, body, [class*="css"] {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    background: #eef2ff;
-    color: #3b5bdb;
+    background: var(--pp-accent-tint);
+    color: var(--pp-accent);
     border-radius: 6px;
     padding: 4px 12px;
     font-size: 12px;
@@ -428,9 +446,9 @@ html, body, [class*="css"] {
 }
 
 /* ── Issue Badge ── */
-.issue-ok { color: #1a9e5c; font-weight: 600; }
-.issue-warn { color: #e07b39; font-weight: 600; }
-.issue-error { color: #e05252; font-weight: 600; }
+.issue-ok { color: var(--pp-green); font-weight: 600; }
+.issue-warn { color: var(--pp-orange); font-weight: 600; }
+.issue-error { color: var(--pp-error); font-weight: 600; }
 
 /* ══ GLOBAL TEXT VISIBILITY — main content area only ══════════════════ */
 
@@ -445,14 +463,14 @@ section[data-testid="stMain"] h2,
 section[data-testid="stMain"] h3,
 section[data-testid="stMain"] h4,
 section[data-testid="stMain"] h5 {
-    color: #1a2b4a !important;
+    color: var(--pp-text) !important;
 }
 
 /* Checkbox label text */
 section[data-testid="stMain"] .stCheckbox label,
 section[data-testid="stMain"] .stCheckbox label p,
 section[data-testid="stMain"] [data-testid="stCheckbox"] label {
-    color: #1a2b4a !important;
+    color: var(--pp-text) !important;
     font-weight: 500 !important;
     font-size: 14px !important;
 }
@@ -461,12 +479,12 @@ section[data-testid="stMain"] [data-testid="stCheckbox"] label {
 section[data-testid="stMain"] .stNumberInput label,
 section[data-testid="stMain"] .stNumberInput label p,
 section[data-testid="stMain"] [data-testid="stNumberInput"] label {
-    color: #1a2b4a !important;
+    color: var(--pp-text) !important;
     font-weight: 500 !important;
     font-size: 14px !important;
 }
 section[data-testid="stMain"] .stNumberInput input {
-    color: #1a2b4a !important;
+    color: var(--pp-text) !important;
     background: #ffffff !important;
     border: 1px solid #c8cdd8 !important;
 }
@@ -476,7 +494,7 @@ section[data-testid="stMain"] [data-testid="stSpinner"] p,
 section[data-testid="stMain"] [data-testid="stSpinner"] span,
 section[data-testid="stMain"] [data-testid="stSpinnerContainer"] p,
 section[data-testid="stMain"] .stSpinner p {
-    color: #1a2b4a !important;
+    color: var(--pp-text) !important;
     font-weight: 500 !important;
 }
 
@@ -489,7 +507,7 @@ section[data-testid="stMain"] .stAlert p {
 /* Bar chart axis labels */
 section[data-testid="stMain"] .vega-embed text,
 section[data-testid="stMain"] .vega-embed .mark-text text {
-    fill: #1a2b4a !important;
+    fill: var(--pp-text) !important;
 }
 
 /* Hero text must stay white — earlier `color: inherit` was leaking dark body color through */
@@ -500,7 +518,7 @@ section[data-testid="stSidebar"] * { color: rgba(255,255,255,0.85) !important; }
 
 /* ── Sidebar ── */
 section[data-testid="stSidebar"] {
-    background: #1a2b4a !important;
+    background: var(--pp-dark) !important;
 }
 section[data-testid="stSidebar"] * {
     color: rgba(255,255,255,0.85) !important;
@@ -523,7 +541,7 @@ section[data-testid="stSidebar"] hr {
 
 /* ── Download Button ── */
 div[data-testid="stDownloadButton"] > button {
-    background: #1a2b4a !important;
+    background: var(--pp-dark) !important;
     color: white !important;
     border: none !important;
     border-radius: 8px !important;
@@ -531,7 +549,7 @@ div[data-testid="stDownloadButton"] > button {
     font-weight: 500 !important;
 }
 div[data-testid="stDownloadButton"] > button:hover {
-    background: #243860 !important;
+    background: var(--pp-accent-hover) !important;
 }
 
 /* ── Dataframe ── */
@@ -564,15 +582,15 @@ hr { border-color: #e4e7ef !important; margin: 24px 0 !important; }
 }
 .type-badge {
     display: inline-block;
-    background: #eef2ff; color: #3b5bdb;
+    background: var(--pp-accent-tint); color: var(--pp-accent);
     border-radius: 6px; padding: 2px 8px;
     font-size: 11px; font-weight: 600;
     text-transform: capitalize;
 }
-.task-title { font-size: 14px; font-weight: 600; color: #1a2b4a; }
+.task-title { font-size: 14px; font-weight: 600; color: var(--pp-text); }
 .task-title-done { font-size: 14px; font-weight: 500; color: #9aa5b4; text-decoration: line-through; }
 .task-desc { font-size: 12px; color: #6b7a94; margin-top: 2px; }
-.overdue { color: #e05252 !important; font-weight: 600 !important; }
+.overdue { color: var(--pp-error) !important; font-weight: 600 !important; }
 .due-ok { color: #4a5568; }
 </style>
 """, unsafe_allow_html=True)
@@ -680,7 +698,7 @@ if _DARK:
     }
     section[data-testid="stMain"] .stButton > button:hover {
         background: #2a3441 !important;
-        border-color: #3b5bdb !important;
+        border-color: var(--pp-accent) !important;
     }
 
     /* Pills + badges — invert the light pastel backgrounds to fit dark mode */
@@ -690,11 +708,10 @@ if _DARK:
     </style>
     """, unsafe_allow_html=True)
 
-# ── Task Tracker — session state & recurrence reset ──────────────────────────
+# ── Task Tracker — session state ──────────────────────────────────────────────
 for _k in ("editing_task_id", "deleting_task_id"):
     if _k not in st.session_state:
         st.session_state[_k] = None
-reset_recurring_tasks()
 
 # ── Hero Section ──────────────────────────────────────────────────────────────
 st.markdown("""
@@ -718,18 +735,35 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     # ── Page navigation ───────────────────────────────────────────────────
-    # Add new pages here as they're ready — e.g. "Dashboard": render_zap_audit
+    # Add new pages here as they're ready — e.g. "Texting Audit": render_texting_audit
     PAGE_RENDERERS = {
         "Onboarding": None,  # bound to render_onboarding() further down the file
+        "Zap Audit":  None,  # bound to render_zap_audit() further down the file
+        "Tasks":      None,  # bound to render_tasks() further down the file
+        "Dashboard":  None,  # bound to render_dashboard() further down the file
     }
     selected_page = option_menu(
         menu_title=None,
         options=list(PAGE_RENDERERS.keys()),
-        icons=["rocket-takeoff"],
+        icons=["rocket-takeoff", "lightning-charge", "check2-square", "bar-chart-line"],
         default_index=0,
         styles={
             "container": {"padding": "0", "background-color": "transparent"},
-            "nav-link": {"font-size": "14px", "text-align": "left", "margin": "2px 0"},
+            "icon": {"color": "rgba(255,255,255,0.85)", "font-size": "15px"},
+            "nav-link": {
+                "font-size": "14px",
+                "text-align": "left",
+                "margin": "2px 0",
+                "color": "rgba(255,255,255,0.85)",
+                "background-color": "transparent",
+                "border-radius": "8px",
+                "--hover-color": "rgba(255,255,255,0.10)",
+            },
+            "nav-link-selected": {
+                "background-color": "#0D6DA3",
+                "color": "#ffffff",
+                "font-weight": "600",
+            },
         },
     )
 
@@ -766,6 +800,13 @@ with st.sidebar:
                 st.rerun()
             else:
                 st.warning("Title required.")
+
+# Recurring-task reset only runs when the Tasks page is actually being viewed —
+# previously this ran on every rerun of the whole app regardless of page, which
+# polled the Task Tracker base constantly and burned through its monthly
+# Airtable API quota (the billing-limit error banner).
+if selected_page == "Tasks":
+    reset_recurring_tasks()
 
 # ── Pages ─────────────────────────────────────────────────────────────────────
 # Each page below is a plain function; the sidebar nav (top of file) picks which
@@ -837,7 +878,7 @@ def render_texting_audit():
             issue_counts.columns = ["Issue", "Count"]
             if not issue_counts.empty:
                 st.markdown("**Issue Breakdown**")
-                st.bar_chart(issue_counts.set_index("Issue"), color="#1a2b4a")
+                st.bar_chart(issue_counts.set_index("Issue"), color="#333864")
 
             flagged_df = df[df["Issue"] != "OK"]
             if not flagged_df.empty:
@@ -1030,7 +1071,7 @@ def render_texting_audit():
             issue_counts.columns = ["Issue", "Count"]
             if not issue_counts.empty:
                 st.markdown("**Issue Breakdown**")
-                st.bar_chart(issue_counts.set_index("Issue"), color="#1a2b4a")
+                st.bar_chart(issue_counts.set_index("Issue"), color="#333864")
 
             flagged_df = df_view[df_view["Issue"] != "OK"]
             if not flagged_df.empty:
@@ -1092,31 +1133,28 @@ def render_texting_audit():
 
 
 # ════════════════════════════════════════════════════════════════════════════
-# TAB 2 — Zap Audit  (live dashboard — reads Airtable Zap Run Log)
+# TAB 2 — Zap Audit  (live dashboard — reads Supabase Zap Run Log)
 # ════════════════════════════════════════════════════════════════════════════
 # Architecture:
 #   Each monitored zap → POST to a Webhooks-by-Zapier catch hook → master
-#   Logger zap → Create Record in this Airtable base. We poll Airtable every
-#   10s and render a live status board.
+#   Logger zap → POST to Supabase's REST API (table `zap_runs`). We poll
+#   Supabase every 10s and render a live status board.
 # ────────────────────────────────────────────────────────────────────────────
 
-# Zap Audit base. Token must be set in Streamlit Cloud secrets (Settings → Secrets):
-#     zap_audit_token = "pat..."
-# Locally, you can put the same line in .streamlit/secrets.toml (gitignored).
-ZAP_AUDIT_BASE_ID  = "appq10XQm3AKQYyYr"
-ZAP_AUDIT_TABLE_ID = "tbleFE2RpNXq1s3S4"
-try:
-    ZAP_AUDIT_TOKEN = st.secrets["zap_audit_token"]
-except Exception:
-    ZAP_AUDIT_TOKEN = ""  # missing-secret message rendered inside the tab
+# Zap Audit — Supabase project. Set in Streamlit Cloud secrets (Settings → Secrets),
+# or locally in .streamlit/secrets.toml (gitignored):
+#     supabase_url = "https://xxxxxxxxxxxx.supabase.co"
+#     supabase_key = "eyJ..."   # anon/public key — read-only, enforced by RLS
+SUPABASE_URL = st.secrets.get("supabase_url", "")
+SUPABASE_KEY = st.secrets.get("supabase_key", "")
 
 ZAP_STATUS_META = {
-    "success":   ("✅", "#1a9e5c"),
-    "error":     ("❌", "#e05252"),
-    "halted":    ("🛑", "#e07b39"),
+    "success":   ("✅", "#1B9E6B"),
+    "error":     ("❌", "#FB3D3D"),
+    "halted":    ("🛑", "#E26514"),
     "held":      ("⏸",  "#e0b939"),
     "filtered":  ("🚫", "#6b7a94"),
-    "delayed":   ("⏱",  "#3b7de8"),
+    "delayed":   ("⏱",  "#0D6DA3"),
     "throttled": ("🐢", "#9b59b6"),
     "pending":   ("⏳", "#6b7a94"),
     "stopped":   ("💤", "#8b0000"),
@@ -1141,48 +1179,36 @@ def _zap_parse_ts(s):
     except Exception:
         return None
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=10, show_spinner=False)
 def fetch_zap_runs(limit: int = 500):
-    """Fetch the most recent N runs from Airtable, newest first."""
-    url = f"https://api.airtable.com/v0/{ZAP_AUDIT_BASE_ID}/{ZAP_AUDIT_TABLE_ID}"
-    headers = {"Authorization": f"Bearer {ZAP_AUDIT_TOKEN}"}
-    base_params = {
-        "pageSize": 100,
-        "sort[0][field]": "Timestamp",
-        "sort[0][direction]": "desc",
+    """Fetch the most recent N runs from Supabase (table `zap_runs`), newest first."""
+    url = f"{SUPABASE_URL}/rest/v1/zap_runs"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
     }
+    params = {
+        "select": "*",
+        "order": "ts.desc",
+        "limit": str(limit),
+    }
+    resp = requests.get(url, headers=headers, params=params, timeout=15)
+    resp.raise_for_status()
     runs = []
-    offset = None
-    safety = 0
-    while len(runs) < limit and safety < 20:
-        safety += 1
-        params = dict(base_params)
-        if offset:
-            params["offset"] = offset
-        resp = requests.get(url, headers=headers, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-        for rec in data.get("records", []):
-            f = rec.get("fields", {})
-            status = f.get("Status", "")
-            if isinstance(status, dict):  # singleSelect returned as object
-                status = status.get("name", "")
-            runs.append({
-                "id":          rec.get("id"),
-                "run_id":      f.get("Run ID", ""),
-                "zap_name":    f.get("Zap Name", "") or "(unnamed zap)",
-                "zap_id":      f.get("Zap ID", ""),
-                "status":      str(status).lower(),
-                "timestamp":   f.get("Timestamp"),
-                "step":        f.get("Step (if error)", ""),
-                "error":       f.get("Error Message", ""),
-                "duration_ms": f.get("Duration (ms)", 0) or 0,
-                "task_count":  f.get("Task Count", 0) or 0,
-                "source":      f.get("Logger Source", ""),
-            })
-        offset = data.get("offset")
-        if not offset:
-            break
+    for rec in resp.json():
+        runs.append({
+            "id":          rec.get("id"),
+            "run_id":      rec.get("run_id", ""),
+            "zap_name":    rec.get("zap_name") or "(unnamed zap)",
+            "zap_id":      rec.get("zap_id", ""),
+            "status":      str(rec.get("status") or "").lower(),
+            "timestamp":   rec.get("ts"),
+            "step":        rec.get("step", ""),
+            "error":       rec.get("error_message", ""),
+            "duration_ms": rec.get("duration_ms", 0) or 0,
+            "task_count":  rec.get("task_count", 0) or 0,
+            "source":      rec.get("logger_source", ""),
+        })
     return runs
 
 
@@ -1194,7 +1220,7 @@ def render_zap_audit():
         <div class="section-icon">⚡</div>
         <div class="section-head-text">
           <h3>Zap Audit — Live</h3>
-          <p>Every zap run logs to Airtable; this dashboard reads it back in real time. No cookies, no polling Zapier.</p>
+          <p>Every zap run logs to Supabase; this dashboard reads it back in real time. No cookies, no polling Zapier.</p>
         </div>
       </div>
     </div>
@@ -1214,19 +1240,20 @@ def render_zap_audit():
 
     # ── Live dashboard — rendered inline (use Refresh button to update) ──────
     def _render_zap_dashboard():
-        if not ZAP_AUDIT_TOKEN:
+        if not SUPABASE_URL or not SUPABASE_KEY:
             st.warning(
-                "**Zap Audit token not configured.**  \n"
-                "Add this line to your Streamlit Cloud secrets (Settings → Secrets):  \n\n"
-                "`zap_audit_token = \"pat...\"`  \n\n"
-                "Locally, add the same line to `.streamlit/secrets.toml` (already gitignored)."
+                "**Supabase not configured.**  \n"
+                "Add these lines to your Streamlit Cloud secrets (Settings → Secrets):  \n\n"
+                "`supabase_url = \"https://xxxxxxxxxxxx.supabase.co\"`  \n"
+                "`supabase_key = \"eyJ...\"`  (the anon/public key)  \n\n"
+                "Locally, add the same lines to `.streamlit/secrets.toml` (already gitignored)."
             )
             return
         try:
             runs = fetch_zap_runs(limit=500)
         except requests.HTTPError as ex:
             code = ex.response.status_code if ex.response is not None else "?"
-            st.error(f"Couldn't read Zap Run Log (HTTP {code}). Check that the PAT has access to base {ZAP_AUDIT_BASE_ID}.")
+            st.error(f"Couldn't read Zap Run Log (HTTP {code}). Check the Supabase URL/key and that the `zap_runs` table exists.")
             return
         except Exception as ex:
             st.error(f"Couldn't read Zap Run Log: {ex}")
@@ -1253,7 +1280,7 @@ def render_zap_audit():
         # ── Live header ────────────────────────────────────────────────────
         st.markdown(
             f"<div style='font-size:12px; color:#6b7a94; margin: 4px 0 12px;'>"
-            f"● <strong style='color:#1a9e5c;'>LIVE</strong> · "
+            f"● <strong style='color: var(--pp-green);'>LIVE</strong> · "
             f"{len(in_window)} run(s) in window · "
             f"refreshed {datetime.now().strftime('%H:%M:%S')}"
             f"</div>",
@@ -1261,7 +1288,7 @@ def render_zap_audit():
         )
 
         if not in_window:
-            st.caption(f"No zap runs in {_zap_window_label.lower()}. (Total in Airtable: {len(runs)})")
+            st.caption(f"No zap runs in {_zap_window_label.lower()}. (Total in Supabase: {len(runs)})")
             return
 
         # ── Status summary cards ──────────────────────────────────────────
@@ -1770,7 +1797,7 @@ def _assignee_pills_html(task: dict) -> str:
         m = members.get(mid)
         name = m["name"] if m else "(removed)"
         pills.append(
-            f'<span style="background:#eef2ff;color:#4338ca;border-radius:10px;'
+            f'<span style="background: var(--pp-accent-tint);color:var(--pp-accent);border-radius:10px;'
             f'padding:1px 8px;font-size:11px;margin-right:4px;">@{name}</span>'
         )
     return '<div style="margin-top:4px;">' + "".join(pills) + '</div>'
@@ -1900,13 +1927,13 @@ def _render_task_tab(filter_type: str, all_tasks: list):
 
     n_done    = sum(1 for t in filtered if t.get("status") == "done")
     n_overdue = sum(1 for t in filtered if _is_overdue(t))
-    ov_badge  = (f' &nbsp;<span style="color:#e05252;font-weight:600;">⚠️ {n_overdue} overdue</span>'
+    ov_badge  = (f' &nbsp;<span style="color: var(--pp-error);font-weight:600;">⚠️ {n_overdue} overdue</span>'
                  if n_overdue else "")
     st.markdown(
         f'<div style="font-size:13px;color:#4a5568;margin-bottom:12px;padding-bottom:8px;'
         f'border-bottom:1px solid #e4e7ef;">'
-        f'<strong style="color:#1a2b4a;">{len(filtered)}</strong> tasks &nbsp;·&nbsp; '
-        f'<span style="color:#1a9e5c;font-weight:600;">✅ {n_done} done</span>{ov_badge}'
+        f'<strong style="color: var(--pp-text);">{len(filtered)}</strong> tasks &nbsp;·&nbsp; '
+        f'<span style="color: var(--pp-green);font-weight:600;">✅ {n_done} done</span>{ov_badge}'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -2003,13 +2030,154 @@ def render_tasks():
         _render_task_tab("one-off", tasks)
         st.markdown("</div>", unsafe_allow_html=True)
 
+
+# ══════════════════════════════════════════════════════════════
+# Dashboard — customizable task metrics/charts
+# ══════════════════════════════════════════════════════════════
+
+def render_dashboard():
+    st.markdown("""
+    <div class="section-wrap">
+        <div class="section-head">
+            <div class="section-icon">📊</div>
+            <div class="section-head-text">
+                <h3>Task Dashboard</h3>
+                <p>Filter and explore team task activity</p>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    tasks = load_tasks()
+    members = load_members()
+    member_name_by_id = {m["id"]: m["name"] for m in members}
+
+    if not tasks:
+        st.info("No tasks yet — add some from the Tasks page to see them here.")
+        return
+
+    # ── Filters ────────────────────────────────────────────────────────────
+    st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+    f1, f2, f3, f4 = st.columns(4)
+    with f1:
+        type_filter = st.multiselect("Type", ["daily", "weekly", "monthly", "one-off"], key="dash_type")
+    with f2:
+        priority_filter = st.multiselect("Priority", ["P1", "P2", "P3"], key="dash_priority")
+    with f3:
+        assignee_names = sorted(m["name"] for m in members if m.get("name"))
+        assignee_filter = st.multiselect("Assignee", assignee_names, key="dash_assignee")
+    with f4:
+        days_back = st.selectbox(
+            "Created within",
+            ["All time", "Last 7 days", "Last 30 days", "Last 90 days"],
+            key="dash_range",
+        )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    filtered = tasks
+    if type_filter:
+        filtered = [t for t in filtered if t.get("type") in type_filter]
+    if priority_filter:
+        filtered = [t for t in filtered if t.get("priority") in priority_filter]
+    if assignee_filter:
+        wanted_ids = {m["id"] for m in members if m.get("name") in assignee_filter}
+        filtered = [t for t in filtered if wanted_ids & set(t.get("assignee_ids") or [])]
+    if days_back != "All time":
+        n = {"Last 7 days": 7, "Last 30 days": 30, "Last 90 days": 90}[days_back]
+        cutoff = date.today() - timedelta(days=n)
+
+        def _created_date(t):
+            try:
+                return date.fromisoformat((t.get("created_at") or "")[:10])
+            except Exception:
+                return None
+
+        filtered = [t for t in filtered if (_created_date(t) or date.today()) >= cutoff]
+
+    if not filtered:
+        st.warning("No tasks match the current filters.")
+        return
+
+    # ── KPI cards ──────────────────────────────────────────────────────────
+    total = len(filtered)
+    done = [t for t in filtered if t.get("status") == "done"]
+    completion_rate = (len(done) / total * 100) if total else 0
+    overdue = [t for t in filtered if _is_overdue(t)]
+    this_week_start = (date.today() - timedelta(days=date.today().weekday())).isoformat()
+    done_this_week = [t for t in done if (t.get("completed_at") or "")[:10] >= this_week_start]
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total Tasks", total)
+    k2.metric("Completion Rate", f"{completion_rate:.0f}%")
+    k3.metric("Overdue", len(overdue))
+    k4.metric("Completed This Week", len(done_this_week))
+
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    # ── Charts ─────────────────────────────────────────────────────────────
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">By Priority</div>', unsafe_allow_html=True)
+        pri_counts = Counter(t.get("priority", "P2") for t in filtered)
+        pri_df = pd.DataFrame(
+            {"Count": [pri_counts.get(p, 0) for p in ["P1", "P2", "P3"]]},
+            index=["P1", "P2", "P3"],
+        )
+        st.bar_chart(pri_df, color="#0D6DA3", horizontal=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with chart_col2:
+        st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+        st.markdown('<div class="card-title">By Assignee</div>', unsafe_allow_html=True)
+        assignee_counts = Counter()
+        for t in filtered:
+            ids = t.get("assignee_ids") or []
+            if not ids:
+                assignee_counts["Unassigned"] += 1
+            for aid in ids:
+                assignee_counts[member_name_by_id.get(aid, "(removed)")] += 1
+        if assignee_counts:
+            assignee_df = pd.DataFrame(
+                {"Count": list(assignee_counts.values())},
+                index=list(assignee_counts.keys()),
+            )
+            st.bar_chart(assignee_df, color="#0D6DA3", horizontal=True)
+        else:
+            st.caption("No assignees to show.")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Completions Over Time (weekly)</div>', unsafe_allow_html=True)
+    weekly_counts = Counter()
+    for t in done:
+        try:
+            d = date.fromisoformat((t.get("completed_at") or "")[:10])
+        except Exception:
+            continue
+        week_start = d - timedelta(days=d.weekday())
+        weekly_counts[week_start.isoformat()] += 1
+    if weekly_counts:
+        weeks_sorted = sorted(weekly_counts)
+        trend_df = pd.DataFrame(
+            {"Completed": [weekly_counts[k] for k in weeks_sorted]},
+            index=weeks_sorted,
+        )
+        st.line_chart(trend_df, color="#0D6DA3")
+    else:
+        st.caption("No completed tasks in range yet.")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
 # ── Page dispatch ─────────────────────────────────────────────────────────────
 # Wire the sidebar nav (see PAGE_RENDERERS init near the top) to the actual
 # render functions now that they're all defined.
 PAGE_RENDERERS["Onboarding"] = render_onboarding
-# Bring these back into the nav (see PAGE_RENDERERS options list up top) when ready:
-#   PAGE_RENDERERS["Dashboard"] = render_zap_audit
+PAGE_RENDERERS["Zap Audit"] = render_zap_audit
+PAGE_RENDERERS["Tasks"] = render_tasks
+PAGE_RENDERERS["Dashboard"] = render_dashboard
+# Bring this back into the nav (see PAGE_RENDERERS options list up top) when ready:
 #   PAGE_RENDERERS["Texting Audit"] = render_texting_audit
-#   PAGE_RENDERERS["Tasks"] = render_tasks
 
 PAGE_RENDERERS[selected_page]()
