@@ -713,18 +713,6 @@ for _k in ("editing_task_id", "deleting_task_id"):
     if _k not in st.session_state:
         st.session_state[_k] = None
 
-# ── Hero Section ──────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="hero">
-    <div class="hero-left">
-        <img class="hero-logo" src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo_white.png" />
-        <div class="hero-title">Aftercare Texting — Audit Dashboard</div>
-        <div class="hero-subtitle">Monitor phone number formats and outbound message quality across all bases</div>
-    </div>
-    <div class="hero-badge">🔒 Internal Tool &nbsp;·&nbsp; Airtable Connected</div>
-</div>
-""", unsafe_allow_html=True)
-
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("""
@@ -749,15 +737,15 @@ with st.sidebar:
         default_index=0,
         styles={
             "container": {"padding": "0", "background-color": "transparent"},
-            "icon": {"color": "rgba(255,255,255,0.85)", "font-size": "15px"},
+            "icon": {"color": "#333864", "font-size": "15px"},
             "nav-link": {
                 "font-size": "14px",
                 "text-align": "left",
                 "margin": "2px 0",
-                "color": "rgba(255,255,255,0.85)",
+                "color": "#333864",
                 "background-color": "transparent",
                 "border-radius": "8px",
-                "--hover-color": "rgba(255,255,255,0.10)",
+                "--hover-color": "rgba(11,15,49,0.08)",
             },
             "nav-link-selected": {
                 "background-color": "#0D6DA3",
@@ -807,6 +795,29 @@ with st.sidebar:
 # Airtable API quota (the billing-limit error banner).
 if selected_page == "Tasks":
     reset_recurring_tasks()
+
+# ── Hero Section ──────────────────────────────────────────────────────────────
+# Copy per page — was a single static "Aftercare Texting" banner shown on every
+# page regardless of which one was selected.
+_HERO_COPY = {
+    "Onboarding": ("Onboarding Automation", "Walk a new funeral home through setup, step by step", "Airtable Connected"),
+    "Zap Audit":  ("Zap Audit — Live", "Every zap run logs to Supabase; monitor status in real time", "Supabase Connected"),
+    "Tasks":      ("Team Tasks", "Track daily, weekly, monthly, and one-off work across the team", "Airtable Connected"),
+    "Dashboard":  ("Task Dashboard", "Filter and explore team task activity", "Airtable Connected"),
+}
+_hero_title, _hero_subtitle, _hero_badge = _HERO_COPY.get(
+    selected_page, ("Parting Pro", "Internal tool", "Internal Tool")
+)
+st.markdown(f"""
+<div class="hero">
+    <div class="hero-left">
+        <img class="hero-logo" src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo_white.png" />
+        <div class="hero-title">{_hero_title}</div>
+        <div class="hero-subtitle">{_hero_subtitle}</div>
+    </div>
+    <div class="hero-badge">🔒 Internal Tool &nbsp;·&nbsp; {_hero_badge}</div>
+</div>
+""", unsafe_allow_html=True)
 
 # ── Pages ─────────────────────────────────────────────────────────────────────
 # Each page below is a plain function; the sidebar nav (top of file) picks which
