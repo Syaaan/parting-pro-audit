@@ -1636,8 +1636,27 @@ def render_onboarding():
 
         # Input field for answers
         with input_container:
-            last_msg = st.session_state.onboarding_output[-1] if st.session_state.onboarding_output else None
+            history = st.session_state.onboarding_output
+            last_msg = history[-1] if history else None
             if last_msg and last_msg[0] == "ask":
+                # Render the context this question depends on (e.g. the record
+                # details a "does this qualify?" question is asking about)
+                # right here too, instead of leaving it buried in the log
+                # below — everything back to the previous question, or the
+                # start of the step if this is the first one.
+                turn_start = 0
+                for i in range(len(history) - 2, -1, -1):
+                    if history[i][0] == "ask":
+                        turn_start = i + 1
+                        break
+                for msg_type, content in history[turn_start:-1]:
+                    if msg_type == "log":
+                        _render_log_line(content)
+                    elif msg_type == "done":
+                        st.success(content)
+                    elif msg_type == "error":
+                        st.error(f"❌ {content}")
+
                 question = last_msg[1]
                 st.markdown(
                     f"<div style='background:#fffbeb;border-left:4px solid #f59e0b;"
