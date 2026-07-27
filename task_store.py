@@ -1,4 +1,6 @@
-"""Task store backed by Airtable (base appTv7HOVgk2hBEBG).
+"""Task store backed by Airtable (Team Tasks / Team Members tables in the
+Tasks Overflow base, appn5Hubzzo595VwZ — overridable via TASKS_BASE_ID /
+TASKS_TABLE_ID / MEMBERS_TABLE_ID secrets).
 
 Public API (drop-in replacement for the previous JSON-file version):
   load_tasks() -> list[dict]
@@ -28,14 +30,26 @@ except Exception:
     _HAS_ST = False
 
 
-BASE_ID = "appTv7HOVgk2hBEBG"
-TASKS_TABLE = "tblaF1j6oS9s9IAUz"
-MEMBERS_TABLE = "tblpNgRJHUe9vV4G8"
+def _cfg(key: str) -> str:
+    """Read from st.secrets first, fall back to environment variables."""
+    if _HAS_ST:
+        try:
+            v = st.secrets.get(key)
+            if v:
+                return str(v)
+        except Exception:
+            pass
+    return os.environ.get(key, "")
+
+
+BASE_ID = _cfg("TASKS_BASE_ID") or "appn5Hubzzo595VwZ"
+TASKS_TABLE = _cfg("TASKS_TABLE_ID") or "tblW5gzXUzeZcMEHq"
+MEMBERS_TABLE = _cfg("MEMBERS_TABLE_ID") or "tblZ1ByP7AhaLUWWU"
 
 TYPE_NAME = {
-    "daily":   "daily ",
-    "weekly":  "weekly ",
-    "monthly": "monthly ",
+    "daily":   "daily",
+    "weekly":  "weekly",
+    "monthly": "monthly",
     "one-off": "one-off",
 }
 TYPE_FROM_NAME = {v: k for k, v in TYPE_NAME.items()}
@@ -59,24 +73,15 @@ STATUS_FROM_NAME = {
 
 _AIRTABLE = "https://api.airtable.com/v0"
 
-_LEGACY_TOKEN = (
-    "patm2acj3jyDwBfyD."
-    "3fb175e7596542e2a9be3acc07700272cf8cb09028c58cc03a6d8bc5be022542"
-)
-
 
 def _get_token():
-    if _HAS_ST:
-        try:
-            tok = st.secrets.get("AIRTABLE_TOKEN")
-            if tok:
-                return tok
-        except Exception:
-            pass
-    env = os.environ.get("AIRTABLE_TOKEN")
-    if env:
-        return env
-    return _LEGACY_TOKEN
+    token = _cfg("AIRTABLE_TOKEN")
+    if not token:
+        raise RuntimeError(
+            "AIRTABLE_TOKEN is not set — add it to .streamlit/secrets.toml "
+            "(or the environment) with access to the Tasks Overflow base."
+        )
+    return token
 
 
 def _headers():
@@ -190,7 +195,7 @@ def add_task(data):
         "Description": data.get("description", ""),
         "Type": TYPE_NAME.get(data.get("type", "one-off"), "one-off"),
         "Priority": data.get("priority", "P2"),
-        "Status": STATUS_NAME.get(data.get("status", "todo"), "todo "),
+        "Status": STATUS_NAME.get(data.get("status", "todo"), "to do"),
         "Source": data.get("source", "manual"),
         "Created At": datetime.now().isoformat(),
         "Recurrence Last Reset": date.today().isoformat(),
@@ -230,7 +235,7 @@ def update_task(task_id, updates):
 
     if "status" in updates:
         new_status = updates["status"]
-        fields["Status"] = STATUS_NAME.get(new_status, "todo ")
+        fields["Status"] = STATUS_NAME.get(new_status, "to do")
         if new_status == "done":
             if "completed_at" in updates and updates["completed_at"]:
                 fields["Completed At"] = str(updates["completed_at"])
