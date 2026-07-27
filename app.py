@@ -1654,11 +1654,34 @@ def render_onboarding():
         with input_container:
             last_msg = st.session_state.onboarding_output[-1] if st.session_state.onboarding_output else None
             if last_msg and last_msg[0] == "ask":
-                st.caption("💡 Type a number to select from a list, or type **y** / **n** for yes/no questions. Use the buttons below as shortcuts.")
+                question = last_msg[1]
+                is_yesno = question.rstrip().endswith("(y/n)")
+
+                # Numbered-list prompts (e.g. "Enter number to select") are
+                # preceded by a single log message full of "[N] label" lines
+                # (see pick_funeral_home in onboarding_automation.py) — pull
+                # those out so we can offer them as click-to-fill buttons
+                # instead of making the user scroll up to find the number.
+                list_options = []
+                if not is_yesno:
+                    history = st.session_state.onboarding_output
+                    if len(history) >= 2 and history[-2][0] == "log":
+                        list_options = re.findall(r"^\s*\[(\d+)\]\s+(.+?)\s*$", history[-2][1], re.MULTILINE)
+                has_back_option = bool(list_options) and bool(re.search(r"\b0\b", question))
+
+                if is_yesno:
+                    hint = "💡 Type **y** / **n**, or use the Yes/No buttons below."
+                elif list_options:
+                    hint = "💡 Click an option below, or type its number."
+                else:
+                    hint = "💡 Type your answer below."
+                st.caption(hint)
+
                 prefill = st.session_state.pop("_prefill_answer", "")
                 user_input = st.text_input("Your response:", value=prefill, key="onboarding_response",
                                            placeholder="Type your answer here…")
-                col_send, col_yn, col_cancel = st.columns([2, 1, 1])
+
+                col_send, col_cancel = st.columns([3, 1])
                 with col_send:
                     if st.button("Send ➤", use_container_width=True):
                         if user_input.strip():
@@ -1689,18 +1712,6 @@ def render_onboarding():
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Failed to send answer: {str(e)}")
-                with col_yn:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.button("✅ Yes", use_container_width=True, key="btn_yes",
-                                     help="Sends 'y' — use for yes/no confirmation prompts"):
-                            st.session_state["_prefill_answer"] = "y"
-                            st.rerun()
-                    with c2:
-                        if st.button("❌ No", use_container_width=True, key="btn_no",
-                                     help="Sends 'n' — use for yes/no confirmation prompts"):
-                            st.session_state["_prefill_answer"] = "n"
-                            st.rerun()
                 with col_cancel:
                     if st.button("🛑 Cancel", use_container_width=True, key="btn_cancel",
                                  help="Stop the current step and discard progress"):
@@ -1711,6 +1722,33 @@ def render_onboarding():
                         st.session_state.onboarding_output = []
                         st.warning("Step cancelled.")
                         st.rerun()
+
+                # ── Suggested input — contextual to this step's question ────
+                if is_yesno:
+                    st.caption("Suggested:")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("✅ Yes", use_container_width=True, key="btn_yes"):
+                            st.session_state["_prefill_answer"] = "y"
+                            st.rerun()
+                    with c2:
+                        if st.button("❌ No", use_container_width=True, key="btn_no"):
+                            st.session_state["_prefill_answer"] = "n"
+                            st.rerun()
+                elif list_options:
+                    st.caption("Suggested:")
+                    display_options = list(list_options)
+                    if has_back_option:
+                        display_options.append(("0", "Go back"))
+                    per_row = 2
+                    for i in range(0, len(display_options), per_row):
+                        row_cols = st.columns(per_row)
+                        for col, (num, label) in zip(row_cols, display_options[i:i + per_row]):
+                            with col:
+                                short_label = label if len(label) <= 60 else label[:57] + "…"
+                                if st.button(f"{num} — {short_label}", use_container_width=True, key=f"btn_opt_{num}"):
+                                    st.session_state["_prefill_answer"] = num
+                                    st.rerun()
     elif st.session_state.onboarding_output:
         st.markdown("""
         <div class="section-wrap">
