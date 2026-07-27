@@ -6,6 +6,7 @@ import requests
 import openpyxl
 import streamlit as st
 import pandas as pd
+from streamlit_option_menu import option_menu
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 from collections import Counter
@@ -19,7 +20,7 @@ from task_store import (
 # ── Config ────────────────────────────────────────────────────────────────────
 TOKEN = "patm2acj3jyDwBfyD.3fb175e7596542e2a9be3acc07700272cf8cb09028c58cc03a6d8bc5be022542"
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
-BASE_IDS = ["appbXFzZnhij88tnQ", "appXT2xJZ1zgll4fG"]
+BASE_IDS = ["appbXFzZnhij88tnQ", "appoDQDrqyvyPsZTY"]
 
 TARGET = re.compile(r"^\+1\d{10}$")
 PLACEHOLDER_PATTERNS = [
@@ -715,6 +716,23 @@ with st.sidebar:
              style="height:28px; filter: brightness(0) invert(1);" />
     </div>
     """, unsafe_allow_html=True)
+
+    # ── Page navigation ───────────────────────────────────────────────────
+    # Add new pages here as they're ready — e.g. "Dashboard": render_zap_audit
+    PAGE_RENDERERS = {
+        "Onboarding": None,  # bound to render_onboarding() further down the file
+    }
+    selected_page = option_menu(
+        menu_title=None,
+        options=list(PAGE_RENDERERS.keys()),
+        icons=["rocket-takeoff"],
+        default_index=0,
+        styles={
+            "container": {"padding": "0", "background-color": "transparent"},
+            "nav-link": {"font-size": "14px", "text-align": "left", "margin": "2px 0"},
+        },
+    )
+
     # Dark-mode toggle — bound to session_state["dark_mode"] via key; flip triggers rerun
     st.toggle("🌙  Dark mode", key="dark_mode", help="Switch the main content to a dark theme")
     st.markdown("---")
@@ -723,352 +741,355 @@ with st.sidebar:
         st.markdown(f"<div style='font-size:12px; opacity:0.7; padding: 4px 0;'>• {b}</div>", unsafe_allow_html=True)
     st.markdown("---")
     st.markdown("<div style='font-size:11px; opacity:0.4; text-align:center;'>Parting Pro Internal · 2025</div>", unsafe_allow_html=True)
-    st.markdown("---")
-    st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Add Task</div>", unsafe_allow_html=True)
-    _members_for_form = [m for m in load_members() if m.get("active")]
-    _name_to_id = {m["name"]: m["id"] for m in _members_for_form}
-    with st.form("sidebar_add_task", clear_on_submit=True):
-        _title = st.text_input("Title *", placeholder="What needs to be done?")
-        _desc  = st.text_area("Description", placeholder="Optional…", height=60)
-        _type  = st.selectbox("Type", ["daily", "weekly", "monthly", "one-off"])
-        _pri   = st.selectbox("Priority", ["P1", "P2", "P3"], index=1)
-        _due   = st.date_input("Due Date (optional)", value=None) if _type == "one-off" else None
-        _assignees = st.multiselect("Assign to", options=list(_name_to_id.keys()),
-                                    help="Pick from active team members. Manage the roster from the Tasks tab.")
-        _sub   = st.form_submit_button("➕ Add Task", use_container_width=True)
-    if _sub:
-        if _title.strip():
-            add_task({"title": _title.strip(), "description": _desc.strip(),
-                      "type": _type, "priority": _pri,
-                      "due_date": str(_due) if _due else None,
-                      "assignee_ids": [_name_to_id[n] for n in _assignees]})
-            st.rerun()
-        else:
-            st.warning("Title required.")
+    # "Add Task" quick-form — only shown when the Tasks page is enabled in
+    # PAGE_RENDERERS above (hidden for now since only Onboarding is exposed).
+    if selected_page == "Tasks":
+        st.markdown("---")
+        st.markdown("<div style='font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.08em; opacity:0.5; margin-bottom:12px;'>Add Task</div>", unsafe_allow_html=True)
+        _members_for_form = [m for m in load_members() if m.get("active")]
+        _name_to_id = {m["name"]: m["id"] for m in _members_for_form}
+        with st.form("sidebar_add_task", clear_on_submit=True):
+            _title = st.text_input("Title *", placeholder="What needs to be done?")
+            _desc  = st.text_area("Description", placeholder="Optional…", height=60)
+            _type  = st.selectbox("Type", ["daily", "weekly", "monthly", "one-off"])
+            _pri   = st.selectbox("Priority", ["P1", "P2", "P3"], index=1)
+            _due   = st.date_input("Due Date (optional)", value=None) if _type == "one-off" else None
+            _assignees = st.multiselect("Assign to", options=list(_name_to_id.keys()),
+                                        help="Pick from active team members. Manage the roster from the Tasks tab.")
+            _sub   = st.form_submit_button("➕ Add Task", use_container_width=True)
+        if _sub:
+            if _title.strip():
+                add_task({"title": _title.strip(), "description": _desc.strip(),
+                          "type": _type, "priority": _pri,
+                          "due_date": str(_due) if _due else None,
+                          "assignee_ids": [_name_to_id[n] for n in _assignees]})
+                st.rerun()
+            else:
+                st.warning("Title required.")
 
-# ── Tabs ──────────────────────────────────────────────────────────────────────
-tab_texting, tab_zap, tab_onboarding, tab_tasks = st.tabs(["📞  Texting Audit", "🔍  Zap Audit", "🚀  Onboarding", "✅  Tasks"])
+# ── Pages ─────────────────────────────────────────────────────────────────────
+# Each page below is a plain function; the sidebar nav (top of file) picks which
+# one runs. Only "Onboarding" is wired into PAGE_RENDERERS for now — the others
+# stay ready to re-enable (e.g. add "Dashboard": render_zap_audit later).
 
-tab_texting.__enter__()
+def render_texting_audit():
+    # ── Audit Controls (Texting tab) ──────────────────────────────────────────────
+    _phone_col, _msg_col = st.columns(2)
+    with _phone_col:
+        run_phones = st.button("📞  Run Phone Audit", use_container_width=True, key="run_phones_btn")
+    with _msg_col:
+        run_messages = st.button("💬  Run Message Audit", use_container_width=True, key="run_messages_btn")
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
 
-# ── Audit Controls (Texting tab) ──────────────────────────────────────────────
-_phone_col, _msg_col = st.columns(2)
-with _phone_col:
-    run_phones = st.button("📞  Run Phone Audit", use_container_width=True, key="run_phones_btn")
-with _msg_col:
-    run_messages = st.button("💬  Run Message Audit", use_container_width=True, key="run_messages_btn")
-st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
-
-# ── Phone Audit ───────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="section-wrap">
-    <div class="section-head">
-        <div class="section-icon">📞</div>
-        <div class="section-head-text">
-            <h3>Step 1 — Phone Number Audit</h3>
-            <p>Validates Contact Cell format against E.164 standard (+1XXXXXXXXXX)</p>
+    # ── Phone Audit ───────────────────────────────────────────────────────────────
+    st.markdown("""
+    <div class="section-wrap">
+        <div class="section-head">
+            <div class="section-icon">📞</div>
+            <div class="section-head-text">
+                <h3>Step 1 — Phone Number Audit</h3>
+                <p>Validates Contact Cell format against E.164 standard (+1XXXXXXXXXX)</p>
+            </div>
         </div>
-    </div>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
-if run_phones:
+    if run_phones:
+        for base_id in BASE_IDS:
+            with st.spinner(f"Fetching records from {base_id}..."):
+                base_name = get_base_name(base_id)
+                df = run_phone_audit(base_id, base_name)
+                st.session_state[f"phone_{base_id}"] = df
+                st.session_state[f"phone_name_{base_id}"] = base_name
+        st.success("✅ Phone audit complete for both bases!")
+
     for base_id in BASE_IDS:
-        with st.spinner(f"Fetching records from {base_id}..."):
-            base_name = get_base_name(base_id)
-            df = run_phone_audit(base_id, base_name)
-            st.session_state[f"phone_{base_id}"] = df
-            st.session_state[f"phone_name_{base_id}"] = base_name
-    st.success("✅ Phone audit complete for both bases!")
+        if f"phone_{base_id}" in st.session_state:
+            df = st.session_state[f"phone_{base_id}"]
+            base_name = st.session_state[f"phone_name_{base_id}"]
 
-for base_id in BASE_IDS:
-    if f"phone_{base_id}" in st.session_state:
-        df = st.session_state[f"phone_{base_id}"]
-        base_name = st.session_state[f"phone_name_{base_id}"]
+            total = len(df)
+            ok = len(df[df["Issue"] == "OK"])
+            flagged = len(df[df["Issue"] != "OK"])
+            pass_rate = round((ok / total * 100), 1) if total else 0
 
-        total = len(df)
-        ok = len(df[df["Issue"] == "OK"])
-        flagged = len(df[df["Issue"] != "OK"])
-        pass_rate = round((ok / total * 100), 1) if total else 0
-
-        st.markdown(f'<div class="base-tag">🏢 {base_name}</div>', unsafe_allow_html=True)
-        st.markdown(f"""
-        <div class="metrics-row">
-            <div class="metric blue">
-                <div class="m-label">Total Records</div>
-                <div class="m-value">{total:,}</div>
-                <div class="m-sub">Contact List</div>
+            st.markdown(f'<div class="base-tag">🏢 {base_name}</div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="metrics-row">
+                <div class="metric blue">
+                    <div class="m-label">Total Records</div>
+                    <div class="m-value">{total:,}</div>
+                    <div class="m-sub">Contact List</div>
+                </div>
+                <div class="metric green">
+                    <div class="m-label">✅ Passing</div>
+                    <div class="m-value">{ok:,}</div>
+                    <div class="m-sub">{pass_rate}% pass rate</div>
+                </div>
+                <div class="metric red">
+                    <div class="m-label">⚠️ Flagged</div>
+                    <div class="m-value">{flagged:,}</div>
+                    <div class="m-sub">Need attention</div>
+                </div>
             </div>
-            <div class="metric green">
-                <div class="m-label">✅ Passing</div>
-                <div class="m-value">{ok:,}</div>
-                <div class="m-sub">{pass_rate}% pass rate</div>
-            </div>
-            <div class="metric red">
-                <div class="m-label">⚠️ Flagged</div>
-                <div class="m-value">{flagged:,}</div>
-                <div class="m-sub">Need attention</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 
-        issue_counts = df[df["Issue"] != "OK"]["Issue"].value_counts().reset_index()
-        issue_counts.columns = ["Issue", "Count"]
-        if not issue_counts.empty:
-            st.markdown("**Issue Breakdown**")
-            st.bar_chart(issue_counts.set_index("Issue"), color="#1a2b4a")
+            issue_counts = df[df["Issue"] != "OK"]["Issue"].value_counts().reset_index()
+            issue_counts.columns = ["Issue", "Count"]
+            if not issue_counts.empty:
+                st.markdown("**Issue Breakdown**")
+                st.bar_chart(issue_counts.set_index("Issue"), color="#1a2b4a")
 
-        flagged_df = df[df["Issue"] != "OK"]
-        if not flagged_df.empty:
-            st.markdown(f"**Flagged Records — {len(flagged_df)} total**")
-            st.dataframe(flagged_df, use_container_width=True, hide_index=True)
+            flagged_df = df[df["Issue"] != "OK"]
+            if not flagged_df.empty:
+                st.markdown(f"**Flagged Records — {len(flagged_df)} total**")
+                st.dataframe(flagged_df, use_container_width=True, hide_index=True)
 
-        # ── Auto-Fix Section ──────────────────────────────────────────────
-        FIXABLE_ISSUES = {"Missing country code (+1)", "Has digits but wrong format"}
-        fixable_rows = []
-        for _, row in df[df["Issue"].isin(FIXABLE_ISSUES)].iterrows():
-            fixed = fix_phone_number(row["Current Value"])
-            if fixed:
-                fixable_rows.append({
-                    "record_id": row["Record ID"],
-                    "Contact Full Name": row["Contact Full Name"],
-                    "Funeral Home": row["Funeral Home"],
-                    "Current Value": row["Current Value"],
-                    "Fixed Value": fixed,
-                    "Issue": row["Issue"],
-                })
+            # ── Auto-Fix Section ──────────────────────────────────────────────
+            FIXABLE_ISSUES = {"Missing country code (+1)", "Has digits but wrong format"}
+            fixable_rows = []
+            for _, row in df[df["Issue"].isin(FIXABLE_ISSUES)].iterrows():
+                fixed = fix_phone_number(row["Current Value"])
+                if fixed:
+                    fixable_rows.append({
+                        "record_id": row["Record ID"],
+                        "Contact Full Name": row["Contact Full Name"],
+                        "Funeral Home": row["Funeral Home"],
+                        "Current Value": row["Current Value"],
+                        "Fixed Value": fixed,
+                        "Issue": row["Issue"],
+                    })
 
-        if fixable_rows:
-            fix_df = pd.DataFrame(fixable_rows)
+            if fixable_rows:
+                fix_df = pd.DataFrame(fixable_rows)
 
-            # Track which record IDs have already been patched this session
-            applied_key = f"fix_applied_{base_id}"
-            if applied_key not in st.session_state:
-                st.session_state[applied_key] = set()
+                # Track which record IDs have already been patched this session
+                applied_key = f"fix_applied_{base_id}"
+                if applied_key not in st.session_state:
+                    st.session_state[applied_key] = set()
 
-            pending = [r for r in fixable_rows
-                       if r["record_id"] not in st.session_state[applied_key]]
-            n_done = len(fixable_rows) - len(pending)
+                pending = [r for r in fixable_rows
+                           if r["record_id"] not in st.session_state[applied_key]]
+                n_done = len(fixable_rows) - len(pending)
 
-            st.markdown(f"**🔧 {len(fix_df)} number(s) can be auto-fixed**")
-            st.dataframe(
-                fix_df[["Contact Full Name", "Funeral Home", "Current Value", "Fixed Value", "Issue"]],
-                use_container_width=True, hide_index=True
-            )
-
-            if n_done:
-                st.success(f"✅ {n_done} of {len(fixable_rows)} record(s) fixed so far this session.")
-
-            if pending:
-                confirmed = st.checkbox(
-                    f"I've reviewed the changes above and want to apply them to {base_name}",
-                    key=f"confirm_fix_{base_id}"
+                st.markdown(f"**🔧 {len(fix_df)} number(s) can be auto-fixed**")
+                st.dataframe(
+                    fix_df[["Contact Full Name", "Funeral Home", "Current Value", "Fixed Value", "Issue"]],
+                    use_container_width=True, hide_index=True
                 )
-                if confirmed:
-                    max_test = min(10, len(pending))
-                    test_n = int(st.number_input(
-                        f"How many records to patch first? (max 10 for a safe test run)",
-                        min_value=1, max_value=max_test, value=min(3, max_test),
-                        key=f"test_n_{base_id}"
-                    ))
 
-                    if n_done == 0:
-                        # No test run yet — only offer the test button
-                        if st.button(f"🧪 Test fix ({test_n} record(s))", key=f"test_fix_{base_id}"):
-                            with st.spinner(f"Patching {test_n} record(s) in Airtable…"):
-                                ok, errs = patch_phone_records(base_id, pending[:test_n])
-                            for r in pending[:ok]:
-                                st.session_state[applied_key].add(r["record_id"])
-                            if errs:
-                                st.warning(f"Fixed {ok}/{test_n}. ⚠️ {len(errs)} failed — try again.")
-                            else:
-                                st.success(f"✅ Test passed — {ok} record(s) fixed. "
-                                           f"Check Airtable to confirm, then apply the rest below.")
-                            st.rerun()
-                    else:
-                        # Test already ran — offer both another test batch and apply-all
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            if st.button(f"🧪 Test another {test_n} record(s)",
-                                         key=f"test_fix_{base_id}"):
-                                with st.spinner(f"Patching {test_n} record(s)…"):
+                if n_done:
+                    st.success(f"✅ {n_done} of {len(fixable_rows)} record(s) fixed so far this session.")
+
+                if pending:
+                    confirmed = st.checkbox(
+                        f"I've reviewed the changes above and want to apply them to {base_name}",
+                        key=f"confirm_fix_{base_id}"
+                    )
+                    if confirmed:
+                        max_test = min(10, len(pending))
+                        test_n = int(st.number_input(
+                            f"How many records to patch first? (max 10 for a safe test run)",
+                            min_value=1, max_value=max_test, value=min(3, max_test),
+                            key=f"test_n_{base_id}"
+                        ))
+
+                        if n_done == 0:
+                            # No test run yet — only offer the test button
+                            if st.button(f"🧪 Test fix ({test_n} record(s))", key=f"test_fix_{base_id}"):
+                                with st.spinner(f"Patching {test_n} record(s) in Airtable…"):
                                     ok, errs = patch_phone_records(base_id, pending[:test_n])
                                 for r in pending[:ok]:
                                     st.session_state[applied_key].add(r["record_id"])
                                 if errs:
-                                    st.warning(f"Fixed {ok}/{test_n}. ⚠️ {len(errs)} failed.")
+                                    st.warning(f"Fixed {ok}/{test_n}. ⚠️ {len(errs)} failed — try again.")
                                 else:
-                                    st.success(f"✅ Fixed {ok} more. "
-                                               f"{len(pending) - ok} remaining.")
+                                    st.success(f"✅ Test passed — {ok} record(s) fixed. "
+                                               f"Check Airtable to confirm, then apply the rest below.")
                                 st.rerun()
-                        with col2:
-                            if st.button(f"✅ Apply all {len(pending)} remaining",
-                                         key=f"apply_all_{base_id}"):
-                                with st.spinner(f"Patching {len(pending)} record(s)…"):
-                                    ok, errs = patch_phone_records(base_id, pending)
-                                for r in pending[:ok]:
-                                    st.session_state[applied_key].add(r["record_id"])
-                                if errs:
-                                    st.warning(f"Fixed {ok}. ⚠️ {len(errs)} failed — re-run audit to retry.")
-                                else:
-                                    st.success(f"✅ All done! Fixed {ok} records in {base_name}.")
-                                st.rerun()
-            else:
-                # Every fixable record has been patched
-                st.success(f"✅ All {len(fixable_rows)} numbers in {base_name} are fixed!")
-                if st.button("🔄 Re-run audit to confirm", key=f"clear_{base_id}"):
-                    del st.session_state[f"phone_{base_id}"]
-                    del st.session_state[f"phone_name_{base_id}"]
-                    if applied_key in st.session_state:
-                        del st.session_state[applied_key]
-                    st.rerun()
+                        else:
+                            # Test already ran — offer both another test batch and apply-all
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                if st.button(f"🧪 Test another {test_n} record(s)",
+                                             key=f"test_fix_{base_id}"):
+                                    with st.spinner(f"Patching {test_n} record(s)…"):
+                                        ok, errs = patch_phone_records(base_id, pending[:test_n])
+                                    for r in pending[:ok]:
+                                        st.session_state[applied_key].add(r["record_id"])
+                                    if errs:
+                                        st.warning(f"Fixed {ok}/{test_n}. ⚠️ {len(errs)} failed.")
+                                    else:
+                                        st.success(f"✅ Fixed {ok} more. "
+                                                   f"{len(pending) - ok} remaining.")
+                                    st.rerun()
+                            with col2:
+                                if st.button(f"✅ Apply all {len(pending)} remaining",
+                                             key=f"apply_all_{base_id}"):
+                                    with st.spinner(f"Patching {len(pending)} record(s)…"):
+                                        ok, errs = patch_phone_records(base_id, pending)
+                                    for r in pending[:ok]:
+                                        st.session_state[applied_key].add(r["record_id"])
+                                    if errs:
+                                        st.warning(f"Fixed {ok}. ⚠️ {len(errs)} failed — re-run audit to retry.")
+                                    else:
+                                        st.success(f"✅ All done! Fixed {ok} records in {base_name}.")
+                                    st.rerun()
+                else:
+                    # Every fixable record has been patched
+                    st.success(f"✅ All {len(fixable_rows)} numbers in {base_name} are fixed!")
+                    if st.button("🔄 Re-run audit to confirm", key=f"clear_{base_id}"):
+                        del st.session_state[f"phone_{base_id}"]
+                        del st.session_state[f"phone_name_{base_id}"]
+                        if applied_key in st.session_state:
+                            del st.session_state[applied_key]
+                        st.rerun()
 
-        elif flagged > 0:
-            st.info("ℹ️ No auto-fixable numbers found — all flagged records need manual review in Airtable.")
-        # ─────────────────────────────────────────────────────────────────
-        st.markdown("---")
+            elif flagged > 0:
+                st.info("ℹ️ No auto-fixable numbers found — all flagged records need manual review in Airtable.")
+            # ─────────────────────────────────────────────────────────────────
+            st.markdown("---")
 
-st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
-if any(f"phone_{b}" in st.session_state for b in BASE_IDS):
-    all_dfs = {
-        f"{st.session_state[f'phone_name_{b}']} - Issues": st.session_state[f"phone_{b}"][st.session_state[f"phone_{b}"]["Issue"] != "OK"]
-        for b in BASE_IDS if f"phone_{b}" in st.session_state
-    }
-    excel_buf = build_excel(all_dfs)
-    st.download_button("⬇️ Download Phone Audit Report (.xlsx)",
-                       excel_buf, "phone_audit_results.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if any(f"phone_{b}" in st.session_state for b in BASE_IDS):
+        all_dfs = {
+            f"{st.session_state[f'phone_name_{b}']} - Issues": st.session_state[f"phone_{b}"][st.session_state[f"phone_{b}"]["Issue"] != "OK"]
+            for b in BASE_IDS if f"phone_{b}" in st.session_state
+        }
+        excel_buf = build_excel(all_dfs)
+        st.download_button("⬇️ Download Phone Audit Report (.xlsx)",
+                           excel_buf, "phone_audit_results.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
 
-# ── Message Audit ─────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="section-wrap">
-    <div class="section-head">
-        <div class="section-icon">💬</div>
-        <div class="section-head-text">
-            <h3>Step 2 — Message Content Audit</h3>
-            <p>Scans outbound messages for unfilled placeholders, empty content, and short messages</p>
+    # ── Message Audit ─────────────────────────────────────────────────────────────
+    st.markdown("""
+    <div class="section-wrap">
+        <div class="section-head">
+            <div class="section-icon">💬</div>
+            <div class="section-head-text">
+                <h3>Step 2 — Message Content Audit</h3>
+                <p>Scans outbound messages for unfilled placeholders, empty content, and short messages</p>
+            </div>
         </div>
-    </div>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
-if run_messages:
+    if run_messages:
+        for base_id in BASE_IDS:
+            with st.spinner(f"Fetching outbound messages from {base_id}..."):
+                base_name = get_base_name(base_id)
+                df = run_message_audit(base_id, base_name)
+                st.session_state[f"msg_{base_id}"] = df
+                st.session_state[f"msg_name_{base_id}"] = base_name
+        st.success("✅ Message audit complete for both bases!")
+
     for base_id in BASE_IDS:
-        with st.spinner(f"Fetching outbound messages from {base_id}..."):
-            base_name = get_base_name(base_id)
-            df = run_message_audit(base_id, base_name)
-            st.session_state[f"msg_{base_id}"] = df
-            st.session_state[f"msg_name_{base_id}"] = base_name
-    st.success("✅ Message audit complete for both bases!")
+        if f"msg_{base_id}" in st.session_state:
+            df = st.session_state[f"msg_{base_id}"]
+            base_name = st.session_state[f"msg_name_{base_id}"]
 
-for base_id in BASE_IDS:
-    if f"msg_{base_id}" in st.session_state:
-        df = st.session_state[f"msg_{base_id}"]
-        base_name = st.session_state[f"msg_name_{base_id}"]
-
-        # ── Test filter ───────────────────────────────────────────────
-        excl_test = st.checkbox(
-            "🔕 Exclude messages containing 'test'",
-            value=True,
-            key=f"excl_test_{base_id}"
-        )
-        df_view = (
-            df[~df["Content (first 200 chars)"].str.contains("test", case=False, na=False)]
-            if excl_test else df
-        )
-
-        total = len(df_view)
-        ok = len(df_view[df_view["Issue"] == "OK"])
-        flagged = len(df_view[df_view["Issue"] != "OK"])
-        pass_rate = round((ok / total * 100), 1) if total else 0
-
-        st.markdown(f'<div class="base-tag">🏢 {base_name}</div>', unsafe_allow_html=True)
-        st.markdown(f"""
-        <div class="metrics-row">
-            <div class="metric blue">
-                <div class="m-label">Total Outbound</div>
-                <div class="m-value">{total:,}</div>
-                <div class="m-sub">Outbound messages</div>
-            </div>
-            <div class="metric green">
-                <div class="m-label">✅ Passing</div>
-                <div class="m-value">{ok:,}</div>
-                <div class="m-sub">{pass_rate}% pass rate</div>
-            </div>
-            <div class="metric red">
-                <div class="m-label">⚠️ Flagged</div>
-                <div class="m-value">{flagged:,}</div>
-                <div class="m-sub">Need attention</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        issue_counts = df_view[df_view["Issue"] != "OK"]["Issue"].value_counts().reset_index()
-        issue_counts.columns = ["Issue", "Count"]
-        if not issue_counts.empty:
-            st.markdown("**Issue Breakdown**")
-            st.bar_chart(issue_counts.set_index("Issue"), color="#1a2b4a")
-
-        flagged_df = df_view[df_view["Issue"] != "OK"]
-        if not flagged_df.empty:
-            st.markdown(f"**Flagged Records — {len(flagged_df)} total**")
-            st.dataframe(flagged_df, use_container_width=True, hide_index=True)
-
-        # ── Placeholder Breakdown ─────────────────────────────────────
-        ph_df = df_view[df_view["Issue"] == "Unfilled placeholder"].copy()
-        if not ph_df.empty:
-            ph_df["Bad Token(s)"] = ph_df["Content (first 200 chars)"].apply(extract_tokens)
-
-            all_tokens = Counter()
-            for content in ph_df["Content (first 200 chars)"]:
-                for p in PLACEHOLDER_PATTERNS:
-                    for m in p.findall(str(content)):
-                        all_tokens[m] += 1
-
-            st.markdown("**📋 Unfilled Placeholder Breakdown**")
-            col1, col2 = st.columns([1, 2])
-            with col1:
-                st.markdown("**Token frequency**")
-                st.dataframe(
-                    pd.DataFrame(all_tokens.most_common(), columns=["Bad Token", "Times Sent"]),
-                    use_container_width=True, hide_index=True
-                )
-            with col2:
-                st.markdown(f"**{len(ph_df)} affected message(s)**")
-                st.dataframe(
-                    ph_df[["Contact Full Name", "Funeral Home",
-                           "Bad Token(s)", "Content (first 200 chars)"]],
-                    use_container_width=True, hide_index=True
-                )
-            st.info(
-                "ℹ️ These messages were already sent with unfilled tokens. "
-                "The contacts above may need a follow-up message. "
-                "Fix the corresponding message templates to prevent future occurrences."
+            # ── Test filter ───────────────────────────────────────────────
+            excl_test = st.checkbox(
+                "🔕 Exclude messages containing 'test'",
+                value=True,
+                key=f"excl_test_{base_id}"
             )
-        # ─────────────────────────────────────────────────────────────
-        st.markdown("---")
+            df_view = (
+                df[~df["Content (first 200 chars)"].str.contains("test", case=False, na=False)]
+                if excl_test else df
+            )
 
-st.markdown("</div>", unsafe_allow_html=True)
+            total = len(df_view)
+            ok = len(df_view[df_view["Issue"] == "OK"])
+            flagged = len(df_view[df_view["Issue"] != "OK"])
+            pass_rate = round((ok / total * 100), 1) if total else 0
 
-if any(f"msg_{b}" in st.session_state for b in BASE_IDS):
-    all_dfs = {
-        f"{st.session_state[f'msg_name_{b}']} - Issues": st.session_state[f"msg_{b}"][st.session_state[f"msg_{b}"]["Issue"] != "OK"]
-        for b in BASE_IDS if f"msg_{b}" in st.session_state
-    }
-    excel_buf = build_excel(all_dfs)
-    st.download_button("⬇️ Download Message Audit Report (.xlsx)",
-                       excel_buf, "messages_audit_results.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            st.markdown(f'<div class="base-tag">🏢 {base_name}</div>', unsafe_allow_html=True)
+            st.markdown(f"""
+            <div class="metrics-row">
+                <div class="metric blue">
+                    <div class="m-label">Total Outbound</div>
+                    <div class="m-value">{total:,}</div>
+                    <div class="m-sub">Outbound messages</div>
+                </div>
+                <div class="metric green">
+                    <div class="m-label">✅ Passing</div>
+                    <div class="m-value">{ok:,}</div>
+                    <div class="m-sub">{pass_rate}% pass rate</div>
+                </div>
+                <div class="metric red">
+                    <div class="m-label">⚠️ Flagged</div>
+                    <div class="m-value">{flagged:,}</div>
+                    <div class="m-sub">Need attention</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-st.markdown("""
-<div style="text-align:center; padding: 32px 0 16px 0;">
-    <img src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo.png" style="height:22px; opacity:0.4;" />
-    <div style="font-size:11px; color:#b0b8c8; margin-top:8px;">Aftercare Texting Audit Tool · Internal Use Only</div>
-</div>
-""", unsafe_allow_html=True)
+            issue_counts = df_view[df_view["Issue"] != "OK"]["Issue"].value_counts().reset_index()
+            issue_counts.columns = ["Issue", "Count"]
+            if not issue_counts.empty:
+                st.markdown("**Issue Breakdown**")
+                st.bar_chart(issue_counts.set_index("Issue"), color="#1a2b4a")
 
-tab_texting.__exit__(None, None, None)
+            flagged_df = df_view[df_view["Issue"] != "OK"]
+            if not flagged_df.empty:
+                st.markdown(f"**Flagged Records — {len(flagged_df)} total**")
+                st.dataframe(flagged_df, use_container_width=True, hide_index=True)
+
+            # ── Placeholder Breakdown ─────────────────────────────────────
+            ph_df = df_view[df_view["Issue"] == "Unfilled placeholder"].copy()
+            if not ph_df.empty:
+                ph_df["Bad Token(s)"] = ph_df["Content (first 200 chars)"].apply(extract_tokens)
+
+                all_tokens = Counter()
+                for content in ph_df["Content (first 200 chars)"]:
+                    for p in PLACEHOLDER_PATTERNS:
+                        for m in p.findall(str(content)):
+                            all_tokens[m] += 1
+
+                st.markdown("**📋 Unfilled Placeholder Breakdown**")
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    st.markdown("**Token frequency**")
+                    st.dataframe(
+                        pd.DataFrame(all_tokens.most_common(), columns=["Bad Token", "Times Sent"]),
+                        use_container_width=True, hide_index=True
+                    )
+                with col2:
+                    st.markdown(f"**{len(ph_df)} affected message(s)**")
+                    st.dataframe(
+                        ph_df[["Contact Full Name", "Funeral Home",
+                               "Bad Token(s)", "Content (first 200 chars)"]],
+                        use_container_width=True, hide_index=True
+                    )
+                st.info(
+                    "ℹ️ These messages were already sent with unfilled tokens. "
+                    "The contacts above may need a follow-up message. "
+                    "Fix the corresponding message templates to prevent future occurrences."
+                )
+            # ─────────────────────────────────────────────────────────────
+            st.markdown("---")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if any(f"msg_{b}" in st.session_state for b in BASE_IDS):
+        all_dfs = {
+            f"{st.session_state[f'msg_name_{b}']} - Issues": st.session_state[f"msg_{b}"][st.session_state[f"msg_{b}"]["Issue"] != "OK"]
+            for b in BASE_IDS if f"msg_{b}" in st.session_state
+        }
+        excel_buf = build_excel(all_dfs)
+        st.download_button("⬇️ Download Message Audit Report (.xlsx)",
+                           excel_buf, "messages_audit_results.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+    st.markdown("""
+    <div style="text-align:center; padding: 32px 0 16px 0;">
+        <img src="https://partingpro.com/wp-content/uploads/2024/07/partingpro-logo.png" style="height:22px; opacity:0.4;" />
+        <div style="font-size:11px; color:#b0b8c8; margin-top:8px;">Aftercare Texting Audit Tool · Internal Use Only</div>
+    </div>
+    """, unsafe_allow_html=True)
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # TAB 2 — Zap Audit  (live dashboard — reads Airtable Zap Run Log)
@@ -1165,7 +1186,7 @@ def fetch_zap_runs(limit: int = 500):
     return runs
 
 
-with tab_zap:
+def render_zap_audit():
     # ── Header ────────────────────────────────────────────────────────────────
     st.markdown('''
     <div class="section-wrap">
@@ -1450,7 +1471,7 @@ def _render_log_line(content: str):
 
 
 # ── Onboarding Tab ────────────────────────────────────────────────────────────
-with tab_onboarding:
+def render_onboarding():
     st.markdown("""
     <div class="section-wrap">
         <div class="section-head">
@@ -1893,7 +1914,7 @@ def _render_task_tab(filter_type: str, all_tasks: list):
         _render_task_row(t, tab_id=filter_type)
 
 
-with tab_tasks:
+def render_tasks():
     tasks = load_tasks()
     today_str = date.today().isoformat()
 
@@ -1981,3 +2002,14 @@ with tab_tasks:
         st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
         _render_task_tab("one-off", tasks)
         st.markdown("</div>", unsafe_allow_html=True)
+
+# ── Page dispatch ─────────────────────────────────────────────────────────────
+# Wire the sidebar nav (see PAGE_RENDERERS init near the top) to the actual
+# render functions now that they're all defined.
+PAGE_RENDERERS["Onboarding"] = render_onboarding
+# Bring these back into the nav (see PAGE_RENDERERS options list up top) when ready:
+#   PAGE_RENDERERS["Dashboard"] = render_zap_audit
+#   PAGE_RENDERERS["Texting Audit"] = render_texting_audit
+#   PAGE_RENDERERS["Tasks"] = render_tasks
+
+PAGE_RENDERERS[selected_page]()

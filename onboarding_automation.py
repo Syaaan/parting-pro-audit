@@ -43,7 +43,7 @@ def _BASE1_TABLE_ID() -> str:
     return _cfg("BASE1_TABLE_ID") or "tblpf0cxsWb6Adgve"
 
 def _BASE2_ID() -> str:
-    return _cfg("BASE2_ID") or "appXT2xJZ1zgll4fG"
+    return _cfg("BASE2_ID") or "appoDQDrqyvyPsZTY"
 
 def _BASE2_TABLE_ID() -> str:
     return _cfg("BASE2_TABLE_ID") or "tblpf0cxsWb6Adgve"
@@ -772,7 +772,7 @@ def step2_twilio(ctx: StepContext) -> None:
         ["Forwards to",    forwarding_num],
         ["City / State",   f"{city}, {state}"],
         ["Studio Flow",    new_flow["sid"]],
-        ["Airtable",       "Base 2 only (Texting Hub v1.2)"],
+        ["Airtable",       "Base 2 only (Texting Hub v1.3)"],
     ])
     if not ctx.confirm("Does everything above look correct?"):
         ctx.warn("Check Twilio and Airtable manually if anything looks off.")
@@ -941,7 +941,7 @@ def step3_review_and_place_id(ctx: StepContext) -> None:
         ["Google Place ID", place_id   or "NOT SET"],
         ["Review Form URL", review_url or "not created"],
         ["Email Notif.",    email      or "—"],
-        ["Airtable",        "Base 2 only (Texting Hub v1.2)"],
+        ["Airtable",        "Base 2 only (Texting Hub v1.3)"],
     ])
     if not ctx.confirm("Does everything above look correct?"):
         ctx.warn("No changes saved. Correct any issues and re-run Step 3.")
@@ -1008,7 +1008,7 @@ def step4_zapier_and_airtable(ctx: StepContext) -> None:
     ctx.log(f"     [ ] Google Place ID  : {place_val}")
     ctx.log("     [ ] Internal notes   : add any relevant onboarding notes")
     ctx.log("     [ ] Message prompts  : open each prompt and verify nothing is broken\n")
-    ctx.link("Open Base 2 record", "https://airtable.com/appXT2xJZ1zgll4fG")
+    ctx.link("Open Base 2 record", "https://airtable.com/appoDQDrqyvyPsZTY")
     ctx.verified("Have you reviewed and filled in all missing fields?")
 
     # ── B. ZAPIER WORKFLOWS ───────────────────────────────────
@@ -1084,7 +1084,7 @@ def step5_interface(ctx: StepContext) -> Optional[str]:
     fh_name = f.get("Funeral Home Name:", "")
     ctx.info(f"Funeral Home: {fh_name}")
 
-    ctx.link("Base 2 Interfaces", "https://airtable.com/appXT2xJZ1zgll4fG")
+    ctx.link("Base 2 Interfaces", "https://airtable.com/appoDQDrqyvyPsZTY")
 
     # ── A. SET UP INTERFACE ───────────────────────────────────
     ctx.divider()
@@ -1184,7 +1184,7 @@ def step5_interface(ctx: StepContext) -> Optional[str]:
     ctx.instruction("Copy the Interface URL and paste it below:")
     interface_url = ctx.ask("\n  🔗 Interface URL").strip()
 
-    ctx.instruction("Add the Interface URL to Airtable Base 2 (Texting Hub v1.2)")
+    ctx.instruction("Add the Interface URL to Airtable Base 2 (Texting Hub v1.3)")
     ctx.verified("Done?")
 
     ctx.divider()
@@ -1196,7 +1196,7 @@ def step5_interface(ctx: StepContext) -> Optional[str]:
         ["Cleanup",        "empty fields removed"],
         ["Holiday Date",   "Dec 1 at 1 PM set"],
         ["Interface",      "published (not shared yet)"],
-        ["Airtable",       "Base 2 only (Texting Hub v1.2)"],
+        ["Airtable",       "Base 2 only (Texting Hub v1.3)"],
     ])
     if not ctx.confirm("Does everything above look correct?"):
         ctx.warn("Finish any remaining interface setup before moving on.")

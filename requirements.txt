@@ -3,3 +3,4 @@ requests
 openpyxl
 pandas
 streamlit-autorefresh
+streamlit-option-menu
