@@ -1871,10 +1871,21 @@ def _render_task_row(task: dict, tab_id: str = "all"):
         title_cls = "task-title-done" if is_done else "task-title"
         desc_html = (f'<div class="task-desc">{task["description"]}</div>'
                      if task.get("description") else "")
+        created_html = ""
+        raw_created = task.get("created_at")
+        if raw_created:
+            try:
+                _created_dt = datetime.fromisoformat(str(raw_created).replace("Z", "+00:00"))
+                created_html = (
+                    '<div style="font-size:11px;color:#9aa5b4;margin-top:2px;">'
+                    f'🗓️ Created {_created_dt.strftime("%b %d, %Y")}</div>'
+                )
+            except Exception:
+                pass
         st.markdown(
             f'<div class="{title_cls}">'
             f'{_priority_pill(task.get("priority","P3"))} {task["title"]}'
-            f'</div>{desc_html}{_assignee_pills_html(task)}',
+            f'</div>{desc_html}{created_html}{_assignee_pills_html(task)}',
             unsafe_allow_html=True,
         )
 
