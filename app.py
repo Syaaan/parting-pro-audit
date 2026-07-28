@@ -2053,6 +2053,54 @@ def render_tasks():
         else:
             st.info("No team members yet. Add one above.")
 
+    # ── Filters ────────────────────────────────────────────────────────────
+    st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">Filters</div>', unsafe_allow_html=True)
+    fc1, fc2, fc3, fc4, fc5 = st.columns([2, 2, 2, 2, 1])
+    with fc1:
+        priority_filter = st.multiselect("Priority", ["P1", "P2", "P3"], key="tasks_filter_priority")
+    with fc2:
+        status_filter = st.multiselect(
+            "Status", ["todo", "done"],
+            format_func=lambda s: "Done" if s == "done" else "To Do",
+            key="tasks_filter_status",
+        )
+    with fc3:
+        created_after = st.date_input("Created after", value=None, key="tasks_filter_created_after")
+    with fc4:
+        created_before = st.date_input("Created before", value=None, key="tasks_filter_created_before")
+    with fc5:
+        st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+        if st.button("Clear", use_container_width=True, key="tasks_filter_clear"):
+            for k in ("tasks_filter_priority", "tasks_filter_status",
+                      "tasks_filter_created_after", "tasks_filter_created_before"):
+                st.session_state.pop(k, None)
+            st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if priority_filter:
+        tasks = [t for t in tasks if t.get("priority") in priority_filter]
+    if status_filter:
+        tasks = [t for t in tasks if t.get("status") in status_filter]
+    if created_after or created_before:
+        def _created_date(t):
+            try:
+                return date.fromisoformat((t.get("created_at") or "")[:10])
+            except Exception:
+                return None
+
+        def _in_range(t):
+            d = _created_date(t)
+            if d is None:
+                return False
+            if created_after and d < created_after:
+                return False
+            if created_before and d > created_before:
+                return False
+            return True
+
+        tasks = [t for t in tasks if _in_range(t)]
+
     # ── Task Board tabs ───────────────────────────────────────────────────
     tb_all, tb_daily, tb_weekly, tb_monthly, tb_oneoff = st.tabs(
         ["All", "Daily", "Weekly", "Monthly", "One-Off"]
