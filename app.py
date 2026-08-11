@@ -1171,6 +1171,34 @@ ZAP_STATUS_META = {
     "stopped":   ("💤", "#8b0000"),
 }
 
+# Zapier's own history labels (what actually lands in Supabase `status`) don't
+# match the canonical bucket keys above one-for-one -- e.g. Zapier logs
+# "Successful" / "Handled error" / "Safely halted" / "On hold", not
+# "success" / "error" / "halted" / "held". Without this alias map, every KPI
+# card except "Filtered" silently reads 0 because the lookups below are exact
+# string matches against ZAP_STATUS_META's keys.
+ZAP_STATUS_ALIASES = {
+    "success":       "success",
+    "successful":    "success",
+    "error":         "error",
+    "errored":       "error",
+    "handled error": "error",
+    "halted":        "halted",
+    "safely halted": "halted",
+    "held":          "held",
+    "on hold":       "held",
+    "filtered":      "filtered",
+    "delayed":       "delayed",
+    "throttled":     "throttled",
+    "pending":       "pending",
+    "scheduled":     "pending",
+    "stopped":       "stopped",
+}
+
+def _zap_status_category(raw_status: str) -> str:
+    """Map a raw (lowercased) Zapier status label to our canonical bucket key."""
+    return ZAP_STATUS_ALIASES.get(raw_status, raw_status)
+
 ZAP_WINDOW_OPTIONS = {
     "Last 1 hour":   timedelta(hours=1),
     "Last 6 hours":  timedelta(hours=6),
@@ -1213,6 +1241,7 @@ def fetch_zap_runs(limit: int = 500):
             "zap_name":    rec.get("zap_name") or "(unnamed zap)",
             "zap_id":      rec.get("zap_id", ""),
             "status":      str(rec.get("status") or "").lower(),
+            "status_cat":  _zap_status_category(str(rec.get("status") or "").lower()),
             "timestamp":   rec.get("ts"),
             "step":        rec.get("step", ""),
             "error":       rec.get("error_message", ""),
@@ -1305,7 +1334,7 @@ def render_zap_audit():
         # ── Status summary cards ──────────────────────────────────────────
         counts = {}
         for r in in_window:
-            counts[r["status"]] = counts.get(r["status"], 0) + 1
+            counts[r["status_cat"]] = counts.get(r["status_cat"], 0) + 1
 
         # First row: Total + the 4 most common statuses
         primary_statuses = ["success", "error", "halted", "held"]
@@ -1326,7 +1355,7 @@ def render_zap_audit():
         # ── Flagged section ──────────────────────────────────────────────
         flagged = {}
         for r in in_window:
-            if r["status"] == "error":
+            if r["status_cat"] == "error":
                 flagged.setdefault(r["zap_name"], []).append(r)
         if flagged:
             st.markdown("#### 🚩 Needs attention")
@@ -1341,7 +1370,7 @@ def render_zap_audit():
         st.markdown("#### Recent activity")
         stream_rows = []
         for r in in_window[:30]:
-            icon = ZAP_STATUS_META.get(r["status"], ("·",))[0]
+            icon = ZAP_STATUS_META.get(r["status_cat"], ("·",))[0]
             time_str = r["_t"].astimezone().strftime("%m-%d %H:%M:%S")
             stream_rows.append({
                 "Time":   time_str,
@@ -1361,7 +1390,7 @@ def render_zap_audit():
                 for s in ZAP_STATUS_META:
                     by_zap[zap][s] = 0
             by_zap[zap]["total"] += 1
-            by_zap[zap][r["status"]] = by_zap[zap].get(r["status"], 0) + 1
+            by_zap[zap][r["status_cat"]] = by_zap[zap].get(r["status_cat"], 0) + 1
             if by_zap[zap]["last_run"] is None or r["_t"] > by_zap[zap]["last_run"]:
                 by_zap[zap]["last_run"] = r["_t"]
 
