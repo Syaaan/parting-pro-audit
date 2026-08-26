@@ -1344,7 +1344,79 @@ def _extract_fh_id(zap_name: str) -> str:
     return m.group(1).replace(",", "") if m else ""
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+# Upload outcome: "did contacts actually arrive", which run history cannot answer.
+#
+# Source is the `Last Contact Added` rollup on Funeral Home Information — MAX(Contact
+# Created) over the linked Contact List, computed by Airtable itself. That makes the date
+# live at no API cost, and reads ~4 calls per refresh across the three bases.
+#
+# It replaces reading `FH Upload Audit`, which stored the same date but frozen at its last
+# ETL run (2026-08-21, and that ETL is not scheduled). The rollup showed several homes
+# uploading as recently as 2026-08-25 that the audit table still reported as weeks idle.
+FH_INFO_TABLE = "tblpf0cxsWb6Adgve"        # same table ID in all three bases
+FH_INFO_BASES = {
+    "v1":   "appbXFzZnhij88tnQ",
+    "v1.2": "appXT2xJZ1zgll4fG",
+    "v1.3": "appoDQDrqyvyPsZTY",
+}
+# Read by FIELD NAME, not ID: the rollup has a different field ID in each base
+# (fldrEj75eC7HlSXzs / fldMr7UbV39P0Ets8 / fldiBVsmjlVuDIX6U) but one shared name.
+FH_NAME_FIELD = "Funeral Home Name:"
+FH_LAST_FIELD = "Last Contact Added"
+
+
+def _norm_fh_name(name: str) -> str:
+    """Loose match key — the two tables spell some homes slightly differently."""
+    n = (name or "").lower().replace("'", "").replace("-", " ").replace(",", "").replace(".", "")
+    n = n.replace("&", "and")
+    return " ".join(n.split())
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_last_uploads():
+    """Live last-contact-added date per funeral home, keyed by normalised name.
+
+    Reads the `Last Contact Added` rollup from Funeral Home Information in all three
+    bases. A home present in more than one base keeps the LATEST date across them —
+    49 homes exist in both v1 and v1.2/v1.3, and the v1 copy is usually an empty stub
+    left by the migration, so taking the max avoids reporting the dead one.
+
+    The day count is computed at render time from this date rather than stored, because
+    a stored age is wrong the day after it is written.
+    """
+    if not AIRTABLE_READY:
+        return {}
+    out = {}
+    for version, base in FH_INFO_BASES.items():
+        url = f"https://api.airtable.com/v0/{base}/{FH_INFO_TABLE}"
+        offset = None
+        while True:
+            params = [("pageSize", "100"),
+                      ("fields[]", FH_NAME_FIELD),
+                      ("fields[]", FH_LAST_FIELD)]
+            if offset:
+                params.append(("offset", offset))
+            resp = requests.get(url, headers=HEADERS, params=params, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            for rec in data.get("records", []):
+                f = rec.get("fields", {})
+                nm = f.get(FH_NAME_FIELD) or ""
+                last = f.get(FH_LAST_FIELD) or ""
+                if not nm or not last:
+                    continue
+                last = str(last)[:10]
+                key = _norm_fh_name(nm)
+                prev = out.get(key)
+                if prev is None or last > prev["last"]:
+                    out[key] = {"last": last, "base": version}
+            offset = data.get("offset")
+            if not offset:
+                break
+    return out
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_pull_tracker():
     """One row per funeral home: name, Parting Pro ID, pull method, query zap id."""
     if not AIRTABLE_READY:
@@ -1545,6 +1617,7 @@ def render_zap_audit():
         )
 
         tracker = []
+        uploads = {}
         if not airtable_secret_warning():
             try:
                 tracker = fetch_pull_tracker()
@@ -1553,6 +1626,14 @@ def render_zap_audit():
                 st.error(f"Couldn't read FH Contact Pull Tracker (HTTP {code}).")
             except Exception as ex:
                 st.error(f"Couldn't read FH Contact Pull Tracker: {ex}")
+            try:
+                uploads = fetch_last_uploads()
+            except requests.HTTPError as ex:
+                code = ex.response.status_code if ex.response is not None else "?"
+                st.warning(f"Couldn't read last-upload dates (HTTP {code}) — "
+                           f"upload columns will be blank.")
+            except Exception as ex:
+                st.warning(f"Couldn't read last-upload dates: {ex}")
 
         if tracker:
             # Aggregate by zap_id — NEVER by zap_name. The scraper truncates names
@@ -1662,6 +1743,20 @@ def render_zap_audit():
                 else:
                     verdict = "🟢 OK"
 
+                # Upload outcome — the other half of the picture. Run history says
+                # whether the mechanism fired; only this says whether contacts landed.
+                up = uploads.get(_norm_fh_name(t["name"])) or {}
+                last_up = up.get("last") or ""
+                if last_up:
+                    try:
+                        d = datetime.fromisoformat(str(last_up)[:10]).date()
+                        up_days = (now.date() - d).days
+                        up_days_str = str(up_days)
+                    except Exception:
+                        up_days_str = "?"
+                else:
+                    up_days_str = "—"
+
                 fh_rows.append({
                     "_rank":     RANK.get(verdict[0], 5),
                     "Funeral home": t["name"] or "(unnamed)",
@@ -1673,7 +1768,9 @@ def render_zap_audit():
                     "🚫 Skipped":      stats["unproductive"] if stats else 0,
                     "❌ Errors":       stats["error"] if stats else 0,
                     "Last run":  last_str,
-                    "Days since": days_str,
+                    "Days since run": days_str,
+                    "Last upload": last_up or "—",
+                    "Days since upload": up_days_str,
                     "Verdict":   verdict,
                 })
 
@@ -1691,6 +1788,25 @@ def render_zap_audit():
             m[3].metric("🟡 Stale", n_stale)
             m[4].metric("🔵 All filtered", n_info)
             m[5].metric("🟢 OK", n_ok)
+
+            # Provenance for the upload columns. Unlike the run data, this needs no
+            # staleness warning: the rollup is computed by Airtable on read, so the date
+            # is live. Say which homes we could not resolve instead — a blank there is
+            # a name-match failure, not an idle funeral home.
+            if uploads:
+                unmatched = [r["Funeral home"] for r in fh_rows
+                             if r["Last upload"] == "—"]
+                msg = (f"**Last upload** is live — `MAX(Contact Created)` rolled up per "
+                       f"funeral home across v1 / v1.2 / v1.3, computed by Airtable, no "
+                       f"snapshot involved.")
+                if unmatched:
+                    msg += (f" {len(unmatched)} home(s) have no date: either genuinely no "
+                            f"contacts yet, or the name did not match between tables — "
+                            f"{', '.join(unmatched[:5])}"
+                            f"{' …' if len(unmatched) > 5 else ''}.")
+                st.caption(msg)
+            else:
+                st.caption("Upload columns unavailable — last-upload dates could not be read.")
 
             only_problems = st.checkbox(
                 "Show only homes needing attention", value=False, key="zap_fh_only_problems"
