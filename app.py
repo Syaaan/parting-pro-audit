@@ -1,3 +1,4 @@
+import os
 import re
 import io
 import json
@@ -18,9 +19,51 @@ from task_store import (
 )
 
 # ── Config ────────────────────────────────────────────────────────────────────
-TOKEN = "patm2acj3jyDwBfyD.3fb175e7596542e2a9be3acc07700272cf8cb09028c58cc03a6d8bc5be022542"
+# Airtable credentials come from Streamlit secrets (Settings → Secrets) or the
+# AIRTABLE_PAT environment variable.
+#
+# NEVER hardcode a token here. This repository is PUBLIC, and a committed secret
+# stays retrievable from git history forever even after it is removed from HEAD.
+#
+# `AIRTABLE_TOKEN` is the name task_store.py and onboarding_automation.py already
+# use, so an existing secret is picked up with no config change. The lowercase and
+# AIRTABLE_PAT spellings are accepted as fallbacks.
+#
+# NOTE ON SCOPE: task_store.py only needs the Tasks Overflow base. This module also
+# reads v1 and v1.3 (see BASE_IDS) and the FH Contact Pull Tracker, so the token must
+# be scoped to those bases too — otherwise those sections 403 while Tasks works fine.
+def _first_secret(*names: str) -> str:
+    for n in names:
+        try:
+            v = st.secrets.get(n)
+        except Exception:
+            v = None
+        if v:
+            return str(v)
+        v = os.environ.get(n)
+        if v:
+            return v
+    return ""
+
+
+TOKEN = _first_secret("AIRTABLE_TOKEN", "airtable_token", "AIRTABLE_PAT")
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
+AIRTABLE_READY = bool(TOKEN)
 BASE_IDS = ["appbXFzZnhij88tnQ", "appoDQDrqyvyPsZTY"]
+
+
+def airtable_secret_warning() -> bool:
+    """Render a warning if the Airtable token is missing. Returns True if missing."""
+    if AIRTABLE_READY:
+        return False
+    st.warning(
+        "**Airtable token not configured.** Add this to Streamlit Cloud secrets "
+        "(Settings → Secrets), then rerun:\n\n"
+        "`airtable_token = \"pat...\"`\n\n"
+        "Locally, add the same line to `.streamlit/secrets.toml` (already gitignored). "
+        "Airtable-backed sections will be empty until this is set."
+    )
+    return True
 
 TARGET = re.compile(r"^\+1\d{10}$")
 PLACEHOLDER_PATTERNS = [
@@ -1204,6 +1247,11 @@ ZAP_WINDOW_OPTIONS = {
     "Last 6 hours":  timedelta(hours=6),
     "Last 24 hours": timedelta(hours=24),
     "Last 7 days":   timedelta(days=7),
+    # Long windows: needed to see a zap that has gone quiet. A query zap that
+    # stopped firing 9 days ago is invisible in any window shorter than this.
+    "Last 30 days":  timedelta(days=30),
+    "Last 60 days":  timedelta(days=60),
+    "Last 90 days":  timedelta(days=90),
 }
 
 def _zap_parse_ts(s):
@@ -1218,23 +1266,44 @@ def _zap_parse_ts(s):
     except Exception:
         return None
 
-@st.cache_data(ttl=10, show_spinner=False)
-def fetch_zap_runs(limit: int = 500):
-    """Fetch the most recent N runs from Supabase (table `zap_runs`), newest first."""
+SUPABASE_PAGE_SIZE = 1000   # PostgREST caps rows per request; page past it
+SUPABASE_MAX_ROWS  = 50000  # hard stop so a runaway loop can't hang the page
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_zap_runs(since_iso: str = "", page_size: int = SUPABASE_PAGE_SIZE):
+    """Fetch runs from Supabase (table `zap_runs`), newest first.
+
+    `since_iso` pushes the time filter down to Postgres, so a 90-day window costs
+    90 days of rows instead of the whole table. Results are paged, because the
+    previous fixed `limit=500` silently truncated any window with more runs than
+    that — which made a long window look emptier than it really was.
+    """
     url = f"{SUPABASE_URL}/rest/v1/zap_runs"
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}",
     }
-    params = {
-        "select": "*",
-        "order": "ts.desc",
-        "limit": str(limit),
-    }
-    resp = requests.get(url, headers=headers, params=params, timeout=15)
-    resp.raise_for_status()
+    records, offset = [], 0
+    while offset < SUPABASE_MAX_ROWS:
+        params = {
+            "select": "*",
+            "order": "ts.desc",
+            "limit": str(page_size),
+            "offset": str(offset),
+        }
+        if since_iso:
+            params["ts"] = f"gte.{since_iso}"
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+        resp.raise_for_status()
+        batch = resp.json()
+        records.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += len(batch)
+
     runs = []
-    for rec in resp.json():
+    for rec in records:
         runs.append({
             "id":          rec.get("id"),
             "run_id":      rec.get("run_id", ""),
@@ -1250,6 +1319,61 @@ def fetch_zap_runs(limit: int = 500):
             "source":      rec.get("logger_source", ""),
         })
     return runs
+
+
+# ── Funeral-home dimension ────────────────────────────────────────────────────
+# `zap_runs` is zap-centric: it knows zap_id and zap_name but nothing about which
+# funeral home a zap belongs to. The FH Contact Pull Tracker supplies that
+# mapping, and is authoritative — zap names are truncated inconsistently by the
+# scraper (the same zap_id appears under several name lengths), so we key on
+# zap_id and fall back to parsing funeral_home_id out of the name only as a hint.
+PULL_TRACKER_BASE  = "appbXFzZnhij88tnQ"          # v1 — Aftercare Texting Hub
+PULL_TRACKER_TABLE = "tblRxX98yqnqrSugH"          # FH Contact Pull Tracker
+
+# Matches "... funeral_home_id = 597", "=938", "= 1,175". Deliberately tolerant.
+_FH_ID_RE = re.compile(r"funeral_home_id\s*=\s*([0-9][0-9,]*)", re.I)
+# A query zap is any zap whose job is pulling contacts in for upload.
+# Matched on "query data" alone, NOT the full "query data to upload in airtable":
+# the scraper truncates names at varying lengths, so real rows arrive as
+# "... - Query Data to upl" and a stricter pattern silently misses them.
+_QUERY_ZAP_RE = re.compile(r"query\s+data", re.I)
+
+
+def _extract_fh_id(zap_name: str) -> str:
+    m = _FH_ID_RE.search(zap_name or "")
+    return m.group(1).replace(",", "") if m else ""
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_pull_tracker():
+    """One row per funeral home: name, Parting Pro ID, pull method, query zap id."""
+    if not AIRTABLE_READY:
+        return []
+    url = f"https://api.airtable.com/v0/{PULL_TRACKER_BASE}/{PULL_TRACKER_TABLE}"
+    fields = ["Funeral Home Name", "Parting Pro ID", "Pull Method",
+              "Query Zap ID", "Query Zap Live", "Zapier Folder"]
+    rows, offset = [], None
+    while True:
+        params = [("pageSize", "100")] + [("fields[]", f) for f in fields]
+        if offset:
+            params.append(("offset", offset))
+        resp = requests.get(url, headers=HEADERS, params=params, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        for rec in data.get("records", []):
+            f = rec.get("fields", {})
+            rows.append({
+                "name":     str(f.get("Funeral Home Name") or "").strip(),
+                "pp_id":    str(f.get("Parting Pro ID") or "").strip(),
+                "method":   str(f.get("Pull Method") or "").strip(),
+                "zap_id":   str(f.get("Query Zap ID") or "").strip(),
+                "zap_live": str(f.get("Query Zap Live") or "").strip(),
+                "folder":   str(f.get("Zapier Folder") or "").strip(),
+            })
+        offset = data.get("offset")
+        if not offset:
+            break
+    return rows
 
 
 def render_zap_audit():
@@ -1289,8 +1413,10 @@ def render_zap_audit():
                 "Locally, add the same lines to `.streamlit/secrets.toml` (already gitignored)."
             )
             return
+        window_delta = ZAP_WINDOW_OPTIONS[_zap_window_label]
+        since_iso = (datetime.now(timezone.utc) - window_delta).isoformat()
         try:
-            runs = fetch_zap_runs(limit=500)
+            runs = fetch_zap_runs(since_iso=since_iso)
         except requests.HTTPError as ex:
             code = ex.response.status_code if ex.response is not None else "?"
             st.error(f"Couldn't read Zap Run Log (HTTP {code}). Check the Supabase URL/key and that the `zap_runs` table exists.")
@@ -1301,14 +1427,14 @@ def render_zap_audit():
 
         if not runs:
             st.info(
-                "No zap runs logged yet. Once a monitored zap fires its webhook step, "
-                "rows will appear here within a few seconds."
+                f"No zap runs logged in {_zap_window_label.lower()}. Once a monitored zap "
+                "fires its webhook step, rows will appear here within a few seconds."
             )
             return
 
         # Filter to selected window
         now = datetime.now(timezone.utc)
-        cutoff = now - ZAP_WINDOW_OPTIONS[_zap_window_label]
+        cutoff = now - window_delta
         in_window = []
         for r in runs:
             t = _zap_parse_ts(r["timestamp"])
@@ -1409,6 +1535,217 @@ def render_zap_audit():
                 "Last run": z["last_run"].astimezone().strftime("%m-%d %H:%M:%S") if z["last_run"] else "—",
             })
         st.dataframe(agg_rows, use_container_width=True, hide_index=True)
+
+        # ── Funeral home coverage ────────────────────────────────────────
+        st.markdown("#### Funeral home coverage")
+        st.caption(
+            "Joins the run log to the FH Contact Pull Tracker. Query-zap homes are "
+            "judged on run history; manual-upload homes have no zap and must be "
+            "judged on their last contact upload instead."
+        )
+
+        tracker = []
+        if not airtable_secret_warning():
+            try:
+                tracker = fetch_pull_tracker()
+            except requests.HTTPError as ex:
+                code = ex.response.status_code if ex.response is not None else "?"
+                st.error(f"Couldn't read FH Contact Pull Tracker (HTTP {code}).")
+            except Exception as ex:
+                st.error(f"Couldn't read FH Contact Pull Tracker: {ex}")
+
+        if tracker:
+            # Aggregate by zap_id — NEVER by zap_name. The scraper truncates names
+            # at inconsistent lengths, so one zap_id appears under several names.
+            # ~9% of rows in zap_runs have a NULL zap_id (183 of 2,055 as of
+            # 2026-08-26), and 55 of those are query zaps that still carry
+            # funeral_home_id in the name. Keying on zap_id alone drops them, which
+            # makes a live home read as "Silent" — a false red. So: rows WITH a
+            # zap_id go in by_id, rows WITHOUT one are matched by funeral_home_id
+            # instead. A row lands in exactly one index, so nothing double-counts.
+            def _blank_stats():
+                return {"total": 0, "success": 0, "unproductive": 0, "error": 0, "last": None}
+
+            def _tally(d, r):
+                d["total"] += 1
+                cat = r["status_cat"]
+                if cat == "success":
+                    d["success"] += 1
+                elif cat in ("filtered", "halted", "held"):
+                    d["unproductive"] += 1
+                elif cat == "error":
+                    d["error"] += 1
+                if d["last"] is None or r["_t"] > d["last"]:
+                    d["last"] = r["_t"]
+
+            def _merge(a, b):
+                if not a:
+                    return b
+                if not b:
+                    return a
+                out = {k: a[k] + b[k] for k in ("total", "success", "unproductive", "error")}
+                lasts = [x for x in (a["last"], b["last"]) if x]
+                out["last"] = max(lasts) if lasts else None
+                return out
+
+            by_id, by_fh = {}, {}
+            for r in in_window:
+                zid = str(r["zap_id"] or "")
+                if zid:
+                    _tally(by_id.setdefault(zid, _blank_stats()), r)
+                else:
+                    fid = _extract_fh_id(r["zap_name"])
+                    if fid:
+                        _tally(by_fh.setdefault(fid, _blank_stats()), r)
+
+            window_days = max(1, int(window_delta.total_seconds() // 86400))
+            # Rank drives sort order and the "needs attention" filter.
+            # 0 broken · 1 suspicious · 2 stale · 3 informational · 4 fine · 5 n/a
+            RANK = {"🔴": 0, "🟠": 1, "🟡": 2, "🔵": 3, "🟢": 4, "⚪": 5}
+
+            # CALIBRATION — measured against real data on 2026-08-26.
+            #
+            # 18 of 20 query zaps show zero "Successful" runs and 100% Filtered /
+            # Safely halted over 30 days. Those homes are NOT behind on uploads, so
+            # Filtered is plainly the normal "no new cases today" outcome for how these
+            # zaps are built. (Allen Dave is the exception: no filter step, so every run
+            # reads Successful.) Treating success==0 as a fault therefore paints 18 of 20
+            # orange — the same uselessness as the old Needs Review field that fired on
+            # 78 of 93 homes and got ignored.
+            #
+            # So all-filtered is INFORMATIONAL (🔵) by default. Whether contacts actually
+            # arrived cannot be answered from Zapier status at all — that lives in the
+            # upload counts. The checkbox below escalates it for anyone who wants to hunt.
+            escalate_filtered = st.checkbox(
+                "Treat all-filtered zaps as a problem",
+                value=False,
+                key="zap_fh_escalate_filtered",
+                help="Off by default: for most of these zaps, Filtered is the normal "
+                     "'no new cases' result, not a fault. Productivity has to be judged "
+                     "on contacts actually arriving, not on Zapier run status.",
+            )
+            filtered_icon = "🟠" if escalate_filtered else "🔵"
+            fh_rows = []
+            for t in tracker:
+                stats = _merge(
+                    by_id.get(t["zap_id"]) if t["zap_id"] else None,
+                    by_fh.get(t["pp_id"]) if t["pp_id"] else None,
+                )
+                is_query = t["method"].lower() == "query zap"
+
+                if stats and stats["last"]:
+                    days_since = (now - stats["last"]).days
+                    last_str = stats["last"].astimezone().strftime("%m-%d %H:%M")
+                    days_str = str(days_since)
+                else:
+                    days_since, last_str = None, "—"
+                    days_str = f">{window_days}" if is_query else "—"
+
+                if not is_query:
+                    verdict = "⚪ Manual — judge on upload date"
+                elif not t["zap_id"]:
+                    verdict = "🔴 No zap ID recorded"
+                elif not stats:
+                    verdict = f"🔴 Silent — no runs in {window_days}d"
+                # Errors are checked BEFORE "never productive": an all-error zap is
+                # a different (louder) problem, and reporting it as "0 skipped" reads
+                # as nonsense.
+                elif stats["error"] == stats["total"]:
+                    verdict = f"🔴 Every run errored ({stats['error']})"
+                elif stats["success"] == 0 and stats["unproductive"] > 0:
+                    verdict = (f"{filtered_icon} Runs, all filtered/halted "
+                               f"({stats['unproductive']}) — check upload count")
+                elif stats["success"] == 0:
+                    verdict = f"🟠 No productive run in {window_days}d"
+                elif days_since is not None and days_since > 3:
+                    verdict = f"🟡 Stale — {days_since}d since last run"
+                else:
+                    verdict = "🟢 OK"
+
+                fh_rows.append({
+                    "_rank":     RANK.get(verdict[0], 5),
+                    "Funeral home": t["name"] or "(unnamed)",
+                    "PP ID":     t["pp_id"] or "—",
+                    "Method":    t["method"] or "(unclassified)",
+                    "Zap ID":    t["zap_id"] or "—",
+                    "Runs":      stats["total"] if stats else 0,
+                    "✅ Productive":   stats["success"] if stats else 0,
+                    "🚫 Skipped":      stats["unproductive"] if stats else 0,
+                    "❌ Errors":       stats["error"] if stats else 0,
+                    "Last run":  last_str,
+                    "Days since": days_str,
+                    "Verdict":   verdict,
+                })
+
+            fh_rows.sort(key=lambda x: (x["_rank"], x["Funeral home"].lower()))
+
+            n_query = sum(1 for r in fh_rows if r["Method"].lower() == "query zap")
+            n_bad   = sum(1 for r in fh_rows if r["_rank"] <= 1)
+            n_stale = sum(1 for r in fh_rows if r["_rank"] == 2)
+            n_info  = sum(1 for r in fh_rows if r["_rank"] == 3)
+            n_ok    = sum(1 for r in fh_rows if r["_rank"] == 4)
+            m = st.columns(6)
+            m[0].metric("Homes tracked", len(fh_rows))
+            m[1].metric("Query zaps", n_query)
+            m[2].metric("🔴 Needs attention", n_bad)
+            m[3].metric("🟡 Stale", n_stale)
+            m[4].metric("🔵 All filtered", n_info)
+            m[5].metric("🟢 OK", n_ok)
+
+            only_problems = st.checkbox(
+                "Show only homes needing attention", value=False, key="zap_fh_only_problems"
+            )
+            shown = [r for r in fh_rows if r["_rank"] <= 2] if only_problems else fh_rows
+            st.dataframe(
+                [{k: v for k, v in r.items() if k != "_rank"} for r in shown],
+                use_container_width=True, hide_index=True,
+            )
+
+            # Zaps present in the run log that no tracker row claims.
+            claimed = {t["zap_id"] for t in tracker if t["zap_id"]}
+            claimed_fh = {t["pp_id"] for t in tracker if t["pp_id"]}
+            orphan_map = {}
+            for r in in_window:
+                zid = str(r["zap_id"] or "")
+                name = r["zap_name"] or ""
+                if not _QUERY_ZAP_RE.search(name):
+                    continue
+                if zid:
+                    if zid in claimed:
+                        continue
+                else:
+                    # No zap_id — fall back to funeral_home_id, and key the orphan
+                    # on that so NULL-id rows still surface.
+                    fid = _extract_fh_id(name)
+                    if not fid or fid in claimed_fh:
+                        continue
+                    zid = f"fh:{fid}"
+                # Keep the longest name seen for this zap_id — the scraper stores
+                # the same zap under several truncations.
+                if len(name) > len(orphan_map.get(zid, "")):
+                    orphan_map[zid] = name
+            orphans = sorted(
+                (zid, _extract_fh_id(name), name) for zid, name in orphan_map.items()
+            )
+            if orphans:
+                with st.expander(f"⚠️ {len(orphans)} query zap(s) running but not in the tracker"):
+                    st.caption(
+                        "These look like contact-pull zaps but no tracker row records their "
+                        "Zap ID — either the tracker is missing a home, or the Query Zap ID "
+                        "field needs filling in."
+                    )
+                    st.dataframe(
+                        [{"Zap ID": z, "funeral_home_id": f or "—", "Zap name": n}
+                         for z, f, n in orphans],
+                        use_container_width=True, hide_index=True,
+                    )
+
+            st.caption(
+                "⚠️ Freshness: this reflects whatever the Zapier history scraper has "
+                "written to `zap_runs`. That scraper is a desktop-local scheduled task, so "
+                "it only runs while the desktop app is up — a collection gap looks exactly "
+                "like a zap going quiet. Verify a 🔴 against Zapier before acting on it."
+            )
 
     _render_zap_dashboard()
 
