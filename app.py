@@ -1630,27 +1630,84 @@ def render_zap_audit():
 
         # ── Per-zap aggregate table ─────────────────────────────────────
         st.markdown("#### Zap summary")
-        by_zap = {}
+        # Group on zap_id, NEVER on zap_name. The scraper stores one zap under several
+        # spellings — truncated at inconsistent lengths, and sometimes differing only in
+        # whitespace — so keying on the name split a single zap into up to 4 rows
+        # (measured: 189 rows for 121 real zaps, 48 zaps fragmented).
+        #
+        # That was not cosmetic. Err % and Last run are computed per row, so a fragment
+        # could report "1 run, 1 error, 100%" while its siblings sat clean, and a
+        # fragment could look weeks stale while the zap ran minutes ago under a
+        # different spelling.
+        def _ws(s):
+            return " ".join((s or "").split())
+
+        # Name variants of every zap that DOES carry an id.
+        ids_by_name = {}
         for r in in_window:
-            zap = r["zap_name"]
-            if zap not in by_zap:
-                by_zap[zap] = {"name": zap, "total": 0, "last_run": None, "zap_id": ""}
+            if r["zap_id"]:
+                ids_by_name.setdefault(_ws(r["zap_name"]), set()).add(str(r["zap_id"]))
+
+        _resolve_cache = {}
+
+        def _resolve_zap_id(zap_name: str) -> str:
+            """Recover the zap_id for a row that has none, via its name.
+
+            ~11% of rows in `zap_runs` have a NULL zap_id. Since the name variants are
+            truncations of one another, a whitespace-normalised prefix match in either
+            direction identifies the zap. Attach only when exactly ONE zap_id matches —
+            an ambiguous name keeps its own row rather than being misattributed to the
+            wrong zap, which would be a worse error than leaving it unattributed.
+            """
+            nm = _ws(zap_name)
+            if nm in _resolve_cache:
+                return _resolve_cache[nm]
+            cands = set()
+            for known, ids in ids_by_name.items():
+                if known.startswith(nm) or nm.startswith(known):
+                    cands |= ids
+            out = next(iter(cands)) if len(cands) == 1 else ""
+            _resolve_cache[nm] = out
+            return out
+
+        by_zap = {}
+        recovered_runs = 0      # NULL-id runs re-attributed to a real zap by name
+        unattributed_runs = 0   # NULL-id runs that stayed unresolved
+        for r in in_window:
+            zid = str(r["zap_id"] or "")
+            if not zid:
+                zid = _resolve_zap_id(r["zap_name"])
+                if zid:
+                    recovered_runs += 1
+                else:
+                    unattributed_runs += 1
+            # Unresolved rows still get a row, keyed on the name so they stay visible
+            # instead of being silently dropped from the totals.
+            key = zid or f"?{_ws(r['zap_name'])}"
+            if key not in by_zap:
+                by_zap[key] = {"name": "", "zap_id": zid, "total": 0, "last_run": None}
                 for s in ZAP_STATUS_META:
-                    by_zap[zap][s] = 0
-            # This table keys on zap_name, so ~9% of rows contribute no zap_id. Keep the
-            # first real one seen for the link; a name whose every row is NULL stays blank.
-            if not by_zap[zap]["zap_id"] and r["zap_id"]:
-                by_zap[zap]["zap_id"] = str(r["zap_id"])
-            by_zap[zap]["total"] += 1
-            by_zap[zap][r["status_cat"]] = by_zap[zap].get(r["status_cat"], 0) + 1
-            if by_zap[zap]["last_run"] is None or r["_t"] > by_zap[zap]["last_run"]:
-                by_zap[zap]["last_run"] = r["_t"]
+                    by_zap[key][s] = 0
+            z = by_zap[key]
+            # Longest spelling wins — the truncations are all prefixes of the real name.
+            # Compare on the whitespace-NORMALISED length, otherwise a variant that is
+            # only longer because of a doubled space wins and the displayed name carries
+            # the scraper artefact (measured: this happens to Circle of Life, where the
+            # 91-char double-space variant would beat the 90-char real name).
+            nm_disp = _ws(r["zap_name"])
+            if len(nm_disp) > len(z["name"]):
+                z["name"] = nm_disp
+            z["total"] += 1
+            z[r["status_cat"]] = z.get(r["status_cat"], 0) + 1
+            if z["last_run"] is None or r["_t"] > z["last_run"]:
+                z["last_run"] = r["_t"]
 
         agg_rows = []
         for z in sorted(by_zap.values(), key=lambda x: (-x.get("error", 0), -x["total"])):
             err_rate = (z.get("error", 0) / z["total"] * 100) if z["total"] else 0
             agg_rows.append({
-                "Zap":      z["name"],
+                "Zap":      z["name"] or "(unnamed)",
+                "Zap ID":   z["zap_id"] or "—",
                 "Open":     _zap_url(z["zap_id"]),
                 "Total":    z["total"],
                 "✅":       z.get("success", 0),
@@ -1665,6 +1722,18 @@ def render_zap_audit():
             agg_rows, use_container_width=True, hide_index=True,
             column_config={"Open": ZAP_LINK_COL},
         )
+        # Say what the grouping did, so the row count is auditable rather than magic.
+        prov = (f"One row per **zap_id**, not per zap name — the scraper stores the same "
+                f"zap under several truncated spellings, which previously split one zap "
+                f"across up to 4 rows and made Err % and Last run unreliable. "
+                f"{len(agg_rows)} zap(s) from {len(in_window)} run(s).")
+        if recovered_runs:
+            prov += (f" {recovered_runs} run(s) had no zap_id and were matched back to "
+                     f"their zap by name.")
+        if unattributed_runs:
+            prov += (f" {unattributed_runs} run(s) could not be attributed to a single "
+                     f"zap — shown with Zap ID “—” and no link, counted but not merged.")
+        st.caption(prov)
 
         # ── Funeral home coverage ────────────────────────────────────────
         st.markdown("#### Funeral home coverage")
