@@ -1344,6 +1344,52 @@ def _extract_fh_id(zap_name: str) -> str:
     return m.group(1).replace(",", "") if m else ""
 
 
+# Deep link into Zapier so a 🔴 can be opened without hand-copying an ID.
+#
+# Only the EDITOR path is used. `zapier.com/app/editor/{id}` has been stable for years;
+# Zapier has reshuffled its Zap-History URLs more than once, so a per-run deep link is
+# deliberately not constructed here — a guessed run URL that 404s is worse than no link.
+# Add one only after confirming the format against a real run URL.
+ZAP_EDITOR_BASE = "https://zapier.com/app/editor/"
+
+
+def _zap_url(zap_id) -> str:
+    """Editor URL for a zap, or "" when there is nothing linkable.
+
+    Returns "" (not a broken URL) for the three cases that legitimately have no zap:
+    manual-upload homes, tracker rows with the Query Zap ID field unfilled, and the
+    `fh:<id>` pseudo-IDs the orphan table uses for NULL-zap_id runs. Streamlit renders
+    an empty LinkColumn cell as blank, which is the correct display for all three.
+    """
+    z = str(zap_id or "").strip()
+    if not z or z == "—" or z.startswith("fh:"):
+        return ""
+    # Guard against a stray name/URL landing in the ID column — only bare numeric
+    # Zap IDs produce a link.
+    return ZAP_EDITOR_BASE + z if z.isdigit() else ""
+
+
+def _zap_link_col(label: str = "Zap"):
+    """LinkColumn showing a short label instead of the raw URL.
+
+    `display_text` needs Streamlit >= 1.32 and requirements.txt pins no version, so
+    fall back to a plain LinkColumn (then an untyped column) rather than letting a
+    column-config mismatch take down the whole dashboard.
+    """
+    try:
+        return st.column_config.LinkColumn(label, display_text="open ↗", width="small")
+    except TypeError:
+        try:
+            return st.column_config.LinkColumn(label, width="small")
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+ZAP_LINK_COL = _zap_link_col()
+
+
 # Upload outcome: "did contacts actually arrive", which run history cannot answer.
 #
 # Source is the `Last Contact Added` rollup on Funeral Home Information — MAX(Contact
@@ -1562,6 +1608,10 @@ def render_zap_audit():
                 step = recent["step"] or "unknown step"
                 msg = (recent["error"] or "")[:150]
                 detail = f"_Last error_: **{step}** — {msg}" if msg else f"_Last error_ at {step}"
+                # Link off the most recent errored run — the one whose detail is shown.
+                url = _zap_url(recent["zap_id"])
+                if url:
+                    detail += f" · [open in Zapier ↗]({url})"
                 st.error(f"**{zap_name}** — {len(errors)} error(s) in window\n\n{detail}")
 
         # ── Activity stream (last 30 events) ────────────────────────────
@@ -1584,9 +1634,13 @@ def render_zap_audit():
         for r in in_window:
             zap = r["zap_name"]
             if zap not in by_zap:
-                by_zap[zap] = {"name": zap, "total": 0, "last_run": None}
+                by_zap[zap] = {"name": zap, "total": 0, "last_run": None, "zap_id": ""}
                 for s in ZAP_STATUS_META:
                     by_zap[zap][s] = 0
+            # This table keys on zap_name, so ~9% of rows contribute no zap_id. Keep the
+            # first real one seen for the link; a name whose every row is NULL stays blank.
+            if not by_zap[zap]["zap_id"] and r["zap_id"]:
+                by_zap[zap]["zap_id"] = str(r["zap_id"])
             by_zap[zap]["total"] += 1
             by_zap[zap][r["status_cat"]] = by_zap[zap].get(r["status_cat"], 0) + 1
             if by_zap[zap]["last_run"] is None or r["_t"] > by_zap[zap]["last_run"]:
@@ -1597,6 +1651,7 @@ def render_zap_audit():
             err_rate = (z.get("error", 0) / z["total"] * 100) if z["total"] else 0
             agg_rows.append({
                 "Zap":      z["name"],
+                "Open":     _zap_url(z["zap_id"]),
                 "Total":    z["total"],
                 "✅":       z.get("success", 0),
                 "❌":       z.get("error", 0),
@@ -1606,7 +1661,10 @@ def render_zap_audit():
                 "Err %":    f"{err_rate:.1f}%" if err_rate else "—",
                 "Last run": z["last_run"].astimezone().strftime("%m-%d %H:%M:%S") if z["last_run"] else "—",
             })
-        st.dataframe(agg_rows, use_container_width=True, hide_index=True)
+        st.dataframe(
+            agg_rows, use_container_width=True, hide_index=True,
+            column_config={"Open": ZAP_LINK_COL},
+        )
 
         # ── Funeral home coverage ────────────────────────────────────────
         st.markdown("#### Funeral home coverage")
@@ -1763,6 +1821,7 @@ def render_zap_audit():
                     "PP ID":     t["pp_id"] or "—",
                     "Method":    t["method"] or "(unclassified)",
                     "Zap ID":    t["zap_id"] or "—",
+                    "Open":      _zap_url(t["zap_id"]),
                     "Runs":      stats["total"] if stats else 0,
                     "✅ Productive":   stats["success"] if stats else 0,
                     "🚫 Skipped":      stats["unproductive"] if stats else 0,
@@ -1815,6 +1874,7 @@ def render_zap_audit():
             st.dataframe(
                 [{k: v for k, v in r.items() if k != "_rank"} for r in shown],
                 use_container_width=True, hide_index=True,
+                column_config={"Open": ZAP_LINK_COL},
             )
 
             # Zaps present in the run log that no tracker row claims.
@@ -1851,9 +1911,11 @@ def render_zap_audit():
                         "field needs filling in."
                     )
                     st.dataframe(
-                        [{"Zap ID": z, "funeral_home_id": f or "—", "Zap name": n}
+                        [{"Zap ID": z, "Open": _zap_url(z),
+                          "funeral_home_id": f or "—", "Zap name": n}
                          for z, f, n in orphans],
                         use_container_width=True, hide_index=True,
+                        column_config={"Open": ZAP_LINK_COL},
                     )
 
             st.caption(
