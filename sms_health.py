@@ -198,6 +198,32 @@ def _annotate_gaps(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+CRON_SECRET = _secret("CRON_SECRET", "cron_secret")
+
+
+def _call_apply(payload: dict) -> dict:
+    """Route writes through the Edge Function, never straight to the database.
+
+    This app is public, so the browser-side key is read-only by design. Approving an
+    opt-out changes production contact records, so it goes through the function's
+    shared secret instead - the same gate the scheduled jobs use.
+    """
+    if not CRON_SECRET:
+        return {"error": "CRON_SECRET is not set in this app's secrets, so approvals "
+                         "cannot be saved. Add it to Streamlit secrets."}
+    try:
+        res = requests.post(
+            f"{OPTOUT_URL}/functions/v1/apply-opt-outs",
+            headers={"Content-Type": "application/json", "x-cron-secret": CRON_SECRET},
+            json=payload,
+            timeout=90,
+        )
+        res.raise_for_status()
+        return res.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": str(exc)}
+
+
 def _pretty_code(code) -> str:
     if pd.isna(code):
         return "-"
@@ -327,6 +353,78 @@ def render_sms_health() -> None:
                                 "message_content", "reasoning", "opt_out_applied"] if c in view.columns]
             st.dataframe(view[cols], use_container_width=True, hide_index=True)
             _csv_download(view[cols], "opt_out_queue", "dl_queue")
+
+            # ---- Human review: tick to opt out ------------------------------------
+            st.divider()
+            st.subheader("Review the uncertain ones")
+            st.caption(
+                "These matched a stop-related word but not a clear opt-out phrase, so they "
+                "were held back rather than guessed. Tick **Opt out** to apply, leave "
+                "unticked to dismiss. Nothing is written to Airtable until you press Apply."
+            )
+
+            pending = view[
+                (view["classification"] == "Opt-Out Not Sure")
+                & (~view.get("opt_out_applied", pd.Series(False, index=view.index)).fillna(False))
+            ] if "classification" in view else pd.DataFrame()
+
+            if pending.empty:
+                st.success("Nothing awaiting review.")
+            else:
+                editor_cols = [c for c in ["message_record_id", "message_timestamp", "contact_name",
+                                           "contact_cell", "funeral_home", "message_content",
+                                           "reasoning"] if c in pending.columns]
+                grid = pending[editor_cols].copy()
+                grid.insert(0, "Opt out", False)
+
+                edited = st.data_editor(
+                    grid,
+                    hide_index=True,
+                    use_container_width=True,
+                    disabled=[c for c in editor_cols],
+                    column_config={
+                        "Opt out": st.column_config.CheckboxColumn(
+                            "Opt out", help="Tick to set Opt-Out on this contact in Airtable"
+                        ),
+                        "message_record_id": None,
+                        "message_content": st.column_config.TextColumn("Message", width="large"),
+                    },
+                    key="review_editor",
+                )
+
+                chosen = edited[edited["Opt out"]] if "Opt out" in edited else pd.DataFrame()
+                b1, b2 = st.columns([1, 3])
+
+                with b1:
+                    preview = st.button("Preview", use_container_width=True,
+                                        help="Dry run - shows what would change, writes nothing")
+                    confirm = st.checkbox("I'm sure", key="apply_confirm")
+                    do_apply = st.button("Apply to Airtable", type="primary",
+                                         use_container_width=True, disabled=not confirm)
+
+                with b2:
+                    st.caption(f"**{len(chosen)}** of {len(edited)} ticked.")
+
+                if preview or do_apply:
+                    payload = {
+                        "approvals": [
+                            {"message_record_id": r["message_record_id"], "approve": True}
+                            for _, r in chosen.iterrows()
+                        ],
+                        "apply": bool(do_apply),
+                    }
+                    with st.spinner("Talking to Airtable..."):
+                        result = _call_apply(payload)
+                    if result.get("error"):
+                        st.error(result["error"])
+                    elif do_apply:
+                        st.success(f"Applied. {result.get('updated', 0)} contact(s) set to Opt-Out.")
+                        st.json(result)
+                        st.cache_data.clear()
+                    else:
+                        st.info(f"Dry run - {result.get('wouldChangeCount', 0)} contact(s) would change. "
+                                "Nothing was written.")
+                        st.json(result)
 
     # ---- Twilio errors -----------------------------------------------------------
     with tab_errors:
