@@ -144,6 +144,60 @@ def _csv_download(df: pd.DataFrame, stem: str, key: str) -> None:
     )
 
 
+def _annotate_gaps(df: pd.DataFrame) -> pd.DataFrame:
+    """Say WHY a cell is empty instead of leaving the reader to guess.
+
+    A blank cell is ambiguous - it could be a display bug or a real hole in the source
+    data. These are all real holes, so name them: a message with no contact link in
+    Airtable, or a funeral home whose record has been deleted. Rows flagged here point
+    at upstream data problems, not at this dashboard.
+    """
+    if df.empty:
+        return df
+    df = df.copy()
+
+    def missing(v) -> bool:
+        # pandas turns None into NaN, and float("nan") is TRUTHY - so a plain
+        # `if not value` check silently never fires. Test for absence explicitly.
+        if v is None:
+            return True
+        try:
+            if pd.isna(v):
+                return True
+        except (TypeError, ValueError):
+            pass
+        return isinstance(v, str) and not v.strip()
+
+    issues = []
+    for _, r in df.iterrows():
+        problems = []
+        if missing(r.get("contact_record_id")):
+            problems.append("no contact linked in Airtable")
+        elif missing(r.get("contact_name")):
+            problems.append("contact linked but name is blank")
+        if missing(r.get("contact_cell")):
+            problems.append("no phone number on the record")
+        fh = r.get("funeral_home")
+        if isinstance(fh, str) and fh.startswith("rec"):
+            problems.append("funeral home record no longer exists")
+        issues.append(" | ".join(problems))
+    df["data_issue"] = issues
+
+    placeholders = {
+        "contact_name": "-- not linked",
+        "contact_cell": "-- missing",
+        "funeral_home": "-- unknown",
+    }
+    for col, label in placeholders.items():
+        if col in df.columns:
+            df[col] = df[col].fillna(label).replace("", label)
+    if "funeral_home" in df.columns:
+        df["funeral_home"] = df["funeral_home"].apply(
+            lambda v: "-- deleted home" if isinstance(v, str) and v.startswith("rec") else v
+        )
+    return df
+
+
 def _pretty_code(code) -> str:
     if pd.isna(code):
         return "-"
@@ -257,11 +311,20 @@ def render_sms_health() -> None:
                 bases = sorted(queue["source_base"].dropna().unique())
                 base_sel = st.multiselect("Source base", bases, default=bases)
 
-            view = queue[queue["classification"].isin(cls) & queue["source_base"].isin(base_sel)]
+            view = _annotate_gaps(
+                queue[queue["classification"].isin(cls) & queue["source_base"].isin(base_sel)]
+            )
 
-            cols = [c for c in ["message_timestamp", "classification", "status", "contact_name",
-                                "contact_cell", "funeral_home", "source_base", "message_content",
-                                "reasoning", "opt_out_applied"] if c in view.columns]
+            flagged = int((view["data_issue"] != "").sum()) if "data_issue" in view else 0
+            if flagged:
+                st.caption(
+                    f"**{flagged} of {len(view)}** rows have missing source data - see the "
+                    "`data_issue` column. These are gaps in Airtable, not display errors."
+                )
+
+            cols = [c for c in ["message_timestamp", "classification", "data_issue", "status",
+                                "contact_name", "contact_cell", "funeral_home", "source_base",
+                                "message_content", "reasoning", "opt_out_applied"] if c in view.columns]
             st.dataframe(view[cols], use_container_width=True, hide_index=True)
             _csv_download(view[cols], "opt_out_queue", "dl_queue")
 
