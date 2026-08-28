@@ -39,8 +39,48 @@ import streamlit as st
 # Connection
 # --------------------------------------------------------------------------------------
 
-OPTOUT_URL = st.secrets.get("OPTOUT_SUPABASE_URL", "").rstrip("/")
-OPTOUT_KEY = st.secrets.get("OPTOUT_SUPABASE_KEY", "")
+def _secret(*names: str) -> str:
+    """Look up a secret tolerantly.
+
+    Streamlit's secrets.toml is section-aware: anything pasted BELOW a `[section]`
+    header belongs to that section, not the top level. Appending to the bottom of an
+    existing file is therefore a common way to end up with keys the app cannot see at
+    the top level. So check the top level first, then one level into each section.
+    """
+    for n in names:
+        try:
+            v = st.secrets.get(n)
+            if v:
+                return str(v)
+        except Exception:
+            pass
+    try:
+        for section in st.secrets:
+            sub = st.secrets[section]
+            if hasattr(sub, "get"):
+                for n in names:
+                    v = sub.get(n)
+                    if v:
+                        return str(v)
+    except Exception:
+        pass
+    return ""
+
+
+def _visible_secret_names() -> str:
+    """Key NAMES only - never values - so a misconfiguration is diagnosable."""
+    try:
+        out = []
+        for k in st.secrets:
+            v = st.secrets[k]
+            out.append(f"[{k}]" if hasattr(v, "keys") else k)
+        return ", ".join(sorted(out)) or "(none)"
+    except Exception as exc:  # noqa: BLE001
+        return f"(could not read secrets: {exc})"
+
+
+OPTOUT_URL = _secret("OPTOUT_SUPABASE_URL", "optout_supabase_url").rstrip("/")
+OPTOUT_KEY = _secret("OPTOUT_SUPABASE_KEY", "optout_supabase_key")
 
 # Twilio error codes we actually see on this account, in plain language.
 ERROR_LABELS = {
@@ -122,6 +162,15 @@ def render_sms_health() -> None:
         st.warning(
             "Not connected. Add `OPTOUT_SUPABASE_URL` and `OPTOUT_SUPABASE_KEY` to the "
             "app's secrets, pointing at the Opt-Out Detector project."
+        )
+        st.caption(
+            f"URL found: **{bool(OPTOUT_URL)}** &nbsp;·&nbsp; key found: **{bool(OPTOUT_KEY)}**"
+        )
+        st.caption(f"Secret names this app can see (names only, no values): `{_visible_secret_names()}`")
+        st.caption(
+            "If the two names are missing from that list, they were most likely pasted "
+            "below a `[section]` header in secrets.toml and belong to that section. "
+            "Move them to the very top of the file, above every `[section]` line."
         )
         return
 
