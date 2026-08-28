@@ -224,6 +224,29 @@ def _call_apply(payload: dict) -> dict:
         return {"error": str(exc)}
 
 
+def _check_airtable_status(cells: list) -> dict:
+    """Ask Airtable which of these numbers are already opted out.
+
+    Supabase's opt_out_applied only tracks what THIS pipeline did. Someone opted out by
+    the existing Airtable automation, by hand, or before this existed would still show
+    as actionable here. Airtable is the source of truth for consent, so check it before
+    offering anyone a tick box.
+    """
+    if not CRON_SECRET or not cells:
+        return {}
+    try:
+        res = requests.post(
+            f"{OPTOUT_URL}/functions/v1/check-opt-out-status",
+            headers={"Content-Type": "application/json", "x-cron-secret": CRON_SECRET},
+            json={"cells": cells},
+            timeout=60,
+        )
+        res.raise_for_status()
+        return res.json().get("statuses", {})
+    except Exception:  # noqa: BLE001 - a failed check must not block review
+        return {}
+
+
 def _pretty_code(code) -> str:
     if pd.isna(code):
         return "-"
@@ -371,9 +394,42 @@ def render_sms_health() -> None:
             if pending.empty:
                 st.success("Nothing awaiting review.")
             else:
+                # Check Airtable first - never offer a tick for someone already opted out.
+                with st.spinner("Checking current Opt-Out status in Airtable..."):
+                    statuses = _check_airtable_status(
+                        [c for c in pending.get("contact_cell", pd.Series(dtype=str)).dropna().unique()
+                         if isinstance(c, str) and c.startswith("+")]
+                    )
+
+                def _state(cell):
+                    s = statuses.get(cell) if isinstance(cell, str) else None
+                    if s is None:
+                        return "unknown"
+                    if s.get("optOut"):
+                        return "already opted out"
+                    return "not found in Airtable" if not s.get("found") else "actionable"
+
+                pending = pending.copy()
+                pending["airtable_state"] = pending.get(
+                    "contact_cell", pd.Series(index=pending.index, dtype=object)
+                ).apply(_state)
+
+                done = pending[pending["airtable_state"] == "already opted out"]
+                if not done.empty:
+                    st.caption(f"{len(done)} already opted out in Airtable - no action needed.")
+                    with st.expander(f"Already opted out ({len(done)})"):
+                        show = [c for c in ["message_timestamp", "contact_name", "contact_cell",
+                                            "funeral_home", "message_content"] if c in done.columns]
+                        st.dataframe(done[show], use_container_width=True, hide_index=True)
+
+                pending = pending[pending["airtable_state"] != "already opted out"]
+                if pending.empty:
+                    st.success("Every uncertain contact is already opted out. Nothing to decide.")
+                    st.stop()
+
                 editor_cols = [c for c in ["message_record_id", "message_timestamp", "contact_name",
-                                           "contact_cell", "funeral_home", "message_content",
-                                           "reasoning"] if c in pending.columns]
+                                           "contact_cell", "airtable_state", "funeral_home",
+                                           "message_content", "reasoning"] if c in pending.columns]
                 grid = pending[editor_cols].copy()
                 grid.insert(0, "Opt out", False)
 
