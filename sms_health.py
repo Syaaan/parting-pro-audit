@@ -14,21 +14,30 @@ The interesting population is the numbers that appear in the second group but no
 first: opted out at the carrier, invisible in Airtable, quietly burning a failed send
 on every scheduled campaign.
 
+CONTROL IS CONTACT-FIRST. The first version of this page hung the opt-out tick boxes off
+the MESSAGE review queue and applied them by re-deriving the contact from a phone
+string. That could never work for the ~24% of queue rows whose Airtable message has no
+contact link, or whose Contact Cell is truncated to "+1". Consent belongs to a person, so
+the control surface is `v_opt_out_control`, one row per contact record per base built on
+contacts_mirror, and writes address {base_id, contact_record_id} directly.
+
 Wire into app.py:
     from sms_health import render_sms_health
     ...
     PAGE_RENDERERS = {..., "SMS Health": None}
     ...
-    elif selected_page == "SMS Health":
-        render_sms_health()
+    PAGE_RENDERERS["SMS Health"] = render_sms_health
 
-Required Streamlit secrets:
+Required Streamlit secrets (top level, ABOVE every [section] header):
     OPTOUT_SUPABASE_URL = "https://lzpdkykxmunljwharcln.supabase.co"
     OPTOUT_SUPABASE_KEY = "<publishable key for that project>"
+    CRON_SECRET         = "<value of pipeline_settings.cron_secret>"
+    AUDIT_ACTOR         = "you@partingpro.com"   # optional, stamped on every action
 """
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
@@ -81,6 +90,8 @@ def _visible_secret_names() -> str:
 
 OPTOUT_URL = _secret("OPTOUT_SUPABASE_URL", "optout_supabase_url").rstrip("/")
 OPTOUT_KEY = _secret("OPTOUT_SUPABASE_KEY", "optout_supabase_key")
+CRON_SECRET = _secret("CRON_SECRET", "cron_secret")
+AUDIT_ACTOR = _secret("AUDIT_ACTOR", "audit_actor") or "audit-app"
 
 # Twilio error codes we actually see on this account, in plain language.
 ERROR_LABELS = {
@@ -95,7 +106,10 @@ ERROR_LABELS = {
     30006: "Landline or unreachable carrier",
     30007: "Carrier filtered as spam",
     30008: "Unknown delivery error",
+    30019: "Message too long",
     30032: "Toll-free number not verified",
+    30034: "Our number is unregistered (A2P)",
+    60005: "Verification service error",
 }
 
 # Which of those mean "stop texting this person, permanently".
@@ -108,8 +122,8 @@ def _configured() -> bool:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def _fetch(table: str, params: dict) -> pd.DataFrame:
-    """GET one table via PostgREST. Returns an empty frame rather than raising, so a
-    single bad panel never takes the whole page down."""
+    """GET one table or view via PostgREST. Returns an empty frame rather than raising,
+    so a single bad panel never takes the whole page down."""
     try:
         res = requests.get(
             f"{OPTOUT_URL}/rest/v1/{table}",
@@ -128,10 +142,20 @@ def _fetch(table: str, params: dict) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def _in_filter(values) -> str:
+    """PostgREST in.() with values that may contain commas or spaces.
+
+    'Uncertain reply, needs review' has a comma in it, which would otherwise be read
+    as a list separator and silently return the wrong rows.
+    """
+    quoted = ",".join('"' + str(v).replace('"', '\\"') + '"' for v in values)
+    return f"in.({quoted})"
+
+
 def _csv_download(df: pd.DataFrame, stem: str, key: str) -> None:
     """Download button for any table on the page. Filenames carry the date so
     successive exports don't overwrite each other in the Downloads folder."""
-    if df.empty:
+    if df is None or df.empty:
         st.caption("Nothing to export for the current filters.")
         return
     stamp = datetime.now().strftime("%Y-%m-%d")
@@ -144,61 +168,11 @@ def _csv_download(df: pd.DataFrame, stem: str, key: str) -> None:
     )
 
 
-def _annotate_gaps(df: pd.DataFrame) -> pd.DataFrame:
-    """Say WHY a cell is empty instead of leaving the reader to guess.
-
-    A blank cell is ambiguous - it could be a display bug or a real hole in the source
-    data. These are all real holes, so name them: a message with no contact link in
-    Airtable, or a funeral home whose record has been deleted. Rows flagged here point
-    at upstream data problems, not at this dashboard.
-    """
-    if df.empty:
-        return df
-    df = df.copy()
-
-    def missing(v) -> bool:
-        # pandas turns None into NaN, and float("nan") is TRUTHY - so a plain
-        # `if not value` check silently never fires. Test for absence explicitly.
-        if v is None:
-            return True
-        try:
-            if pd.isna(v):
-                return True
-        except (TypeError, ValueError):
-            pass
-        return isinstance(v, str) and not v.strip()
-
-    issues = []
-    for _, r in df.iterrows():
-        problems = []
-        if missing(r.get("contact_record_id")):
-            problems.append("no contact linked in Airtable")
-        elif missing(r.get("contact_name")):
-            problems.append("contact linked but name is blank")
-        if missing(r.get("contact_cell")):
-            problems.append("no phone number on the record")
-        fh = r.get("funeral_home")
-        if isinstance(fh, str) and fh.startswith("rec"):
-            problems.append("funeral home record no longer exists")
-        issues.append(" | ".join(problems))
-    df["data_issue"] = issues
-
-    placeholders = {
-        "contact_name": "-- not linked",
-        "contact_cell": "-- missing",
-        "funeral_home": "-- unknown",
-    }
-    for col, label in placeholders.items():
-        if col in df.columns:
-            df[col] = df[col].fillna(label).replace("", label)
-    if "funeral_home" in df.columns:
-        df["funeral_home"] = df["funeral_home"].apply(
-            lambda v: "-- deleted home" if isinstance(v, str) and v.startswith("rec") else v
-        )
-    return df
-
-
-CRON_SECRET = _secret("CRON_SECRET", "cron_secret")
+def _pretty_code(code) -> str:
+    if pd.isna(code):
+        return "-"
+    code = int(code)
+    return f"{code} - {ERROR_LABELS.get(code, 'Unrecognised code')}"
 
 
 def _call_apply(payload: dict) -> dict:
@@ -209,14 +183,16 @@ def _call_apply(payload: dict) -> dict:
     shared secret instead - the same gate the scheduled jobs use.
     """
     if not CRON_SECRET:
-        return {"error": "CRON_SECRET is not set in this app's secrets, so approvals "
-                         "cannot be saved. Add it to Streamlit secrets."}
+        return {"error": "CRON_SECRET is not set in this app's secrets, so nothing can "
+                         "be applied. Copy the value of pipeline_settings.cron_secret "
+                         "into Streamlit App settings -> Secrets as CRON_SECRET, at the "
+                         "top of the file above every [section] header."}
     try:
         res = requests.post(
             f"{OPTOUT_URL}/functions/v1/apply-opt-outs",
             headers={"Content-Type": "application/json", "x-cron-secret": CRON_SECRET},
             json=payload,
-            timeout=90,
+            timeout=120,
         )
         res.raise_for_status()
         return res.json()
@@ -224,34 +200,233 @@ def _call_apply(payload: dict) -> dict:
         return {"error": str(exc)}
 
 
-def _check_airtable_status(cells: list) -> dict:
-    """Ask Airtable which of these numbers are already opted out.
+def _report_result(result: dict, applied: bool) -> None:
+    """One place that reads the function's response.
 
-    Supabase's opt_out_applied only tracks what THIS pipeline did. Someone opted out by
-    the existing Airtable automation, by hand, or before this existed would still show
-    as actionable here. Airtable is the source of truth for consent, so check it before
-    offering anyone a tick box.
+    The old version checked result["error"] only. The function returns `errors`,
+    plural, as a list, so per-base failures rendered as a green success with 0 updated.
     """
-    if not CRON_SECRET or not cells:
-        return {}
-    try:
-        res = requests.post(
-            f"{OPTOUT_URL}/functions/v1/check-opt-out-status",
-            headers={"Content-Type": "application/json", "x-cron-secret": CRON_SECRET},
-            json={"cells": cells},
-            timeout=60,
+    if result.get("error"):
+        st.error(result["error"])
+        return
+
+    problems = result.get("errors") or []
+    if applied:
+        updated = result.get("updated", 0)
+        failed = result.get("failedCount", 0)
+        if updated:
+            st.success(f"Applied. {updated} contact record(s) set to Opt-Out.")
+        else:
+            st.warning("Nothing was updated. Expand the response below for why.")
+        if failed:
+            st.error(f"{failed} record(s) failed to write.")
+        extras = []
+        if result.get("reconciled"):
+            extras.append(f"{result['reconciled']} queue row(s) closed as already opted out")
+        if result.get("dismissed"):
+            extras.append(f"{result['dismissed']} row(s) dismissed")
+        if extras:
+            st.caption(" · ".join(extras))
+    else:
+        st.info(
+            f"Dry run. {result.get('wouldChangeCount', 0)} contact record(s) would be "
+            f"set to Opt-Out across {len(result.get('byBase') or {})} base(s), covering "
+            f"{result.get('distinctNumbers', 0)} distinct number(s). Nothing was written."
         )
-        res.raise_for_status()
-        return res.json().get("statuses", {})
-    except Exception:  # noqa: BLE001 - a failed check must not block review
-        return {}
+
+    if problems:
+        st.error("The function reported problems:")
+        for p in problems:
+            st.markdown(f"- {p}")
+
+    with st.expander("Full response"):
+        st.json(result)
 
 
-def _pretty_code(code) -> str:
-    if pd.isna(code):
-        return "-"
-    code = int(code)
-    return f"{code} - {ERROR_LABELS.get(code, 'Unrecognised code')}"
+def _grid_key(prefix: str, keys) -> str:
+    """A widget key that changes when the row set changes.
+
+    st.data_editor stores edits by row POSITION. If the underlying rows shift while
+    stored edits exist, those edits land on the wrong contacts. Deriving the key from
+    the row identities means a changed row set gets a clean widget instead of
+    silently misapplied ticks.
+    """
+    h = hashlib.sha1("|".join(sorted(map(str, keys))).encode("utf-8")).hexdigest()[:12]
+    return f"{prefix}_{h}"
+
+
+# --------------------------------------------------------------------------------------
+# Opt-Out Control
+# --------------------------------------------------------------------------------------
+
+CONTROL_COLS = [
+    "control_key", "base_label", "contact_name", "phone", "funeral_home",
+    "signal_state", "opted_out_in_airtable", "inbound_signals", "twilio_failed_sends",
+    "last_message", "last_reasoning", "last_signal_at", "last_failure_at",
+    "contact_record_id", "base_id", "phone_d10",
+]
+
+
+def _render_control() -> None:
+    st.caption(
+        "One row per contact record per base, built from the nightly contacts mirror "
+        "and every signal we hold about that number. Ticking **Opt out** sets the "
+        "Opt-Out checkbox on that contact in Airtable. Opting out applies to **every "
+        "base the number appears in**, because consent belongs to the person, not to "
+        "a base."
+    )
+
+    c1, c2, c3 = st.columns([1.4, 1.4, 1])
+    with c1:
+        search = st.text_input(
+            "Search name or number",
+            placeholder="e.g. Sara Lewis or 2545633156",
+            help="Leave blank to see only contacts with an open opt-out signal.",
+        )
+    with c2:
+        bases = _fetch("airtable_bases", {"select": "label", "order": "sort_order"})
+        base_opts = list(bases["label"]) if not bases.empty else ["v1", "v1.2", "v1.3"]
+        base_sel = st.multiselect("Base", base_opts, default=base_opts)
+    with c3:
+        show_all = st.toggle(
+            "Include resolved",
+            value=False,
+            help="Also show contacts already opted out, and contacts with no signal.",
+        )
+
+    params = {"select": ",".join(CONTROL_COLS), "order": "signal_state,contact_name", "limit": 2000}
+    if base_sel and len(base_sel) != len(base_opts):
+        params["base_label"] = _in_filter(base_sel)
+
+    if search.strip():
+        needle = search.strip().replace("*", "").replace(",", " ")
+        digits = "".join(ch for ch in needle if ch.isdigit())
+        clauses = [f"contact_name.ilike.*{needle}*", f"funeral_home.ilike.*{needle}*"]
+        if digits:
+            clauses.append(f"phone_d10.ilike.*{digits}*")
+        params["or"] = "(" + ",".join(clauses) + ")"
+    elif not show_all:
+        params["actionable"] = "is.true"
+    else:
+        params["signal_state"] = "neq.No signal"
+
+    data = _fetch("v_opt_out_control", params)
+
+    if data.empty:
+        if search.strip():
+            st.info("No contacts match that search.")
+        else:
+            st.success("No contacts have an open opt-out signal. Nothing to action.")
+        return
+
+    actionable = data[~data["opted_out_in_airtable"].fillna(False)] \
+        if "opted_out_in_airtable" in data else data
+    resolved = data[data["opted_out_in_airtable"].fillna(False)] \
+        if "opted_out_in_airtable" in data else pd.DataFrame()
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Shown", len(data))
+    m2.metric("Still textable", len(actionable),
+              help="Opt-Out is not set in Airtable, so every campaign run reaches these people.")
+    m3.metric("Already opted out", len(resolved))
+
+    if actionable.empty:
+        st.success("Every contact in this view is already opted out in Airtable.")
+        _csv_download(data, "opt_out_control", "dl_control_all")
+        return
+
+    display = [
+        "base_label", "contact_name", "phone", "funeral_home", "signal_state",
+        "inbound_signals", "twilio_failed_sends", "last_message", "last_reasoning",
+    ]
+    display = [c for c in display if c in actionable.columns]
+
+    grid = actionable[["control_key"] + display].reset_index(drop=True).copy()
+    grid.insert(0, "Opt out", False)
+    grid.insert(1, "Dismiss", False)
+
+    # A form, so ticking a box does NOT rerun the script. The old version re-queried
+    # Airtable on every single click and rebuilt the row set from the response, which
+    # is what made ticks appear to vanish.
+    with st.form("opt_out_control_form", border=True):
+        st.markdown("**Tick the contacts to opt out, then Preview or Apply.**")
+        edited = st.data_editor(
+            grid,
+            hide_index=True,
+            use_container_width=True,
+            disabled=display,
+            column_config={
+                "Opt out": st.column_config.CheckboxColumn(
+                    "Opt out", help="Set the Opt-Out checkbox on this contact in Airtable"),
+                "Dismiss": st.column_config.CheckboxColumn(
+                    "Dismiss", help="Mark the signal reviewed and not an opt-out. Writes nothing to Airtable."),
+                "control_key": None,
+                "base_label": st.column_config.TextColumn("Base", width="small"),
+                "contact_name": st.column_config.TextColumn("Contact"),
+                "phone": st.column_config.TextColumn("Number", width="small"),
+                "funeral_home": st.column_config.TextColumn("Funeral home"),
+                "signal_state": st.column_config.TextColumn("Why flagged"),
+                "inbound_signals": st.column_config.NumberColumn("Replies", width="small"),
+                "twilio_failed_sends": st.column_config.NumberColumn("Failed sends", width="small"),
+                "last_message": st.column_config.TextColumn("Last message", width="large"),
+                "last_reasoning": st.column_config.TextColumn("Classifier reasoning", width="medium"),
+            },
+            key=_grid_key("control_editor", grid["control_key"]),
+        )
+
+        f1, f2, f3 = st.columns([1, 1, 2])
+        with f1:
+            preview = st.form_submit_button("Preview", use_container_width=True,
+                                            help="Dry run. Shows what would change, writes nothing.")
+        with f2:
+            do_apply = st.form_submit_button("Apply to Airtable", type="primary",
+                                             use_container_width=True)
+        with f3:
+            sure = st.checkbox("I'm sure", help="Required before Apply will write anything.")
+
+    if not (preview or do_apply):
+        st.caption(f"{len(grid)} contact(s) in this view. Nothing submitted yet.")
+        _csv_download(actionable, "opt_out_control", "dl_control")
+        return
+
+    # Read the ticks as a positional mask against `grid`, not by pulling
+    # control_key out of `edited`. Inside a form there are no reruns between
+    # render and submit, so the two frames are row-for-row identical, and this
+    # does not depend on whether a column hidden via column_config comes back in
+    # the editor's return value.
+    def _picked(col: str) -> list:
+        if col not in edited:
+            return []
+        mask = edited[col].fillna(False).astype(bool).to_numpy()
+        return list(grid.loc[mask, "control_key"])
+
+    chosen_keys = _picked("Opt out")
+    dismiss_keys = _picked("Dismiss")
+
+    if not chosen_keys and not dismiss_keys:
+        st.warning("Nothing was ticked, so there is nothing to preview or apply.")
+        return
+
+    if do_apply and not sure:
+        st.warning("Tick **I'm sure** and press Apply again. Nothing was written.")
+        return
+
+    payload = {
+        "apply": bool(do_apply),
+        "actor": AUDIT_ACTOR,
+        "scope": "all-bases",
+        "keys": chosen_keys,
+        "dismiss_keys": dismiss_keys,
+        # The scheduled 21610 population is folded in on purpose: it is the same
+        # decision, and it is not on a cron schedule of its own.
+        "include_twilio_auto": True,
+        "reconcile_queue": True,
+    }
+    with st.spinner("Talking to Airtable..."):
+        result = _call_apply(payload)
+    _report_result(result, applied=bool(do_apply))
+    if do_apply and not result.get("error"):
+        st.cache_data.clear()
 
 
 # --------------------------------------------------------------------------------------
@@ -277,6 +452,14 @@ def render_sms_health() -> None:
         )
         return
 
+    if not CRON_SECRET:
+        st.error(
+            "`CRON_SECRET` is missing from this app's secrets, so **no opt-out can be "
+            "applied**. Ticks will save nothing. Copy the value of "
+            "`pipeline_settings.cron_secret` into App settings -> Secrets as "
+            "`CRON_SECRET`, above every `[section]` header."
+        )
+
     # ---- Filters -----------------------------------------------------------------
     with st.container(border=True):
         c1, c2, c3 = st.columns([1.2, 1, 1])
@@ -287,6 +470,8 @@ def render_sms_health() -> None:
                 ["Last 7 days", "Last 14 days", "Last 30 days", "Last 60 days",
                  "Last 90 days", "Custom number of days", "All time"],
                 index=2,
+                help="Applies to the message-level tabs. The Opt-Out Control tab always "
+                     "shows the current state of every contact.",
             )
 
         with c2:
@@ -315,11 +500,8 @@ def render_sms_health() -> None:
 
     # ---- Load --------------------------------------------------------------------
     messages = _fetch("sms_messages", {"select": "*", "order": "message_timestamp.desc", **ts_filter})
-    queue = _fetch(
-        "opt_out_review_queue",
-        {"select": "*", "order": "message_timestamp.desc",
-         **({"message_timestamp": f"gte.{since_iso}"} if since_iso else {})},
-    )
+    queue = _fetch("opt_out_review_queue",
+                   {"select": "*", "order": "message_timestamp.desc", **ts_filter})
 
     if not messages.empty and "detection_source" in messages:
         inbound = messages[messages["detection_source"] == "airtable-inbound"]
@@ -328,28 +510,62 @@ def render_sms_health() -> None:
         inbound = twilio = pd.DataFrame()
 
     # ---- Headline numbers --------------------------------------------------------
-    confirmed = queue[queue["classification"] == "Opt-Out Confirmed"] if not queue.empty else pd.DataFrame()
-    needs_review = queue[queue["classification"] == "Opt-Out Not Sure"] if not queue.empty else pd.DataFrame()
-    unapplied = confirmed[~confirmed.get("opt_out_applied", pd.Series(dtype=bool)).fillna(False)] \
-        if not confirmed.empty else pd.DataFrame()
+    open_rows = queue[~queue.get("opt_out_applied", pd.Series(dtype=bool)).fillna(False)] \
+        if not queue.empty else pd.DataFrame()
+    confirmed = open_rows[open_rows["classification"] == "Opt-Out Confirmed"] \
+        if not open_rows.empty else pd.DataFrame()
+    needs_review = open_rows[open_rows["classification"] == "Opt-Out Not Sure"] \
+        if not open_rows.empty else pd.DataFrame()
+
+    still_textable = _fetch("v_opt_out_control",
+                            {"select": "control_key", "actionable": "is.true", "limit": 5000})
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Confirmed opt-outs", len(confirmed))
-    m2.metric("Awaiting human review", len(needs_review))
-    m3.metric("Confirmed, not yet applied", len(unapplied),
-              help="Still textable in Airtable. Every campaign run reaches these people.")
+    m1.metric("Contacts still textable", len(still_textable),
+              help="Have an open opt-out signal and Opt-Out is not set in Airtable. "
+                   "Every campaign run reaches these people.")
+    m2.metric("Confirmed, open", len(confirmed))
+    m3.metric("Awaiting human review", len(needs_review))
     m4.metric("Twilio send failures", len(twilio))
 
-    tab_queue, tab_errors, tab_gap, tab_health = st.tabs(
-        ["Opt-out queue", "Twilio errors", "Invisible opt-outs", "Pipeline health"]
+    tab_control, tab_queue, tab_errors, tab_gap, tab_blocked, tab_audit, tab_health = st.tabs(
+        ["Opt-Out Control", "Review queue", "Twilio errors", "Invisible opt-outs",
+         "Cannot action", "Audit log", "Pipeline health"]
     )
 
-    # ---- Opt-out review queue ----------------------------------------------------
+    # ---- Opt-Out Control ---------------------------------------------------------
+    with tab_control:
+        _render_control()
+
+        st.divider()
+        st.subheader("Housekeeping")
+        st.caption(
+            "Queue rows whose contact is already opted out in Airtable, usually by the "
+            "older Airtable automation or by hand. Closing them costs no Airtable calls "
+            "and stops them reappearing in the review list."
+        )
+        if st.button("Close rows already opted out in Airtable"):
+            with st.spinner("Reconciling..."):
+                res = _call_apply({
+                    "apply": True, "actor": AUDIT_ACTOR, "keys": [],
+                    "include_twilio_auto": False, "reconcile_queue": True,
+                })
+            if res.get("error"):
+                st.error(res["error"])
+            else:
+                st.success(f"{res.get('reconciled', 0)} queue row(s) closed.")
+                st.cache_data.clear()
+
+    # ---- Review queue ------------------------------------------------------------
     with tab_queue:
         if queue.empty:
             st.info("No opt-out signals in this window.")
         else:
-            f1, f2 = st.columns(2)
+            st.caption(
+                "The raw message-level signals. This is a reading view. Opting anyone "
+                "out happens on the **Opt-Out Control** tab, against the contact record."
+            )
+            f1, f2, f3 = st.columns(3)
             with f1:
                 cls = st.multiselect(
                     "Classification",
@@ -359,128 +575,19 @@ def render_sms_health() -> None:
             with f2:
                 bases = sorted(queue["source_base"].dropna().unique())
                 base_sel = st.multiselect("Source base", bases, default=bases)
+            with f3:
+                only_open = st.toggle("Open rows only", value=True)
 
-            view = _annotate_gaps(
-                queue[queue["classification"].isin(cls) & queue["source_base"].isin(base_sel)]
-            )
+            view = queue[queue["classification"].isin(cls) & queue["source_base"].isin(base_sel)]
+            if only_open and "opt_out_applied" in view:
+                view = view[~view["opt_out_applied"].fillna(False)]
 
-            flagged = int((view["data_issue"] != "").sum()) if "data_issue" in view else 0
-            if flagged:
-                st.caption(
-                    f"**{flagged} of {len(view)}** rows have missing source data - see the "
-                    "`data_issue` column. These are gaps in Airtable, not display errors."
-                )
-
-            cols = [c for c in ["message_timestamp", "classification", "data_issue", "status",
+            cols = [c for c in ["message_timestamp", "classification", "status",
                                 "contact_name", "contact_cell", "funeral_home", "source_base",
-                                "message_content", "reasoning", "opt_out_applied"] if c in view.columns]
+                                "message_content", "reasoning", "approve_opt_out",
+                                "opt_out_applied"] if c in view.columns]
             st.dataframe(view[cols], use_container_width=True, hide_index=True)
             _csv_download(view[cols], "opt_out_queue", "dl_queue")
-
-            # ---- Human review: tick to opt out ------------------------------------
-            st.divider()
-            st.subheader("Review the uncertain ones")
-            st.caption(
-                "These matched a stop-related word but not a clear opt-out phrase, so they "
-                "were held back rather than guessed. Tick **Opt out** to apply, leave "
-                "unticked to dismiss. Nothing is written to Airtable until you press Apply."
-            )
-
-            pending = view[
-                (view["classification"] == "Opt-Out Not Sure")
-                & (~view.get("opt_out_applied", pd.Series(False, index=view.index)).fillna(False))
-            ] if "classification" in view else pd.DataFrame()
-
-            if pending.empty:
-                st.success("Nothing awaiting review.")
-            else:
-                # Check Airtable first - never offer a tick for someone already opted out.
-                with st.spinner("Checking current Opt-Out status in Airtable..."):
-                    statuses = _check_airtable_status(
-                        [c for c in pending.get("contact_cell", pd.Series(dtype=str)).dropna().unique()
-                         if isinstance(c, str) and c.startswith("+")]
-                    )
-
-                def _state(cell):
-                    s = statuses.get(cell) if isinstance(cell, str) else None
-                    if s is None:
-                        return "unknown"
-                    if s.get("optOut"):
-                        return "already opted out"
-                    return "not found in Airtable" if not s.get("found") else "actionable"
-
-                pending = pending.copy()
-                pending["airtable_state"] = pending.get(
-                    "contact_cell", pd.Series(index=pending.index, dtype=object)
-                ).apply(_state)
-
-                done = pending[pending["airtable_state"] == "already opted out"]
-                if not done.empty:
-                    st.caption(f"{len(done)} already opted out in Airtable - no action needed.")
-                    with st.expander(f"Already opted out ({len(done)})"):
-                        show = [c for c in ["message_timestamp", "contact_name", "contact_cell",
-                                            "funeral_home", "message_content"] if c in done.columns]
-                        st.dataframe(done[show], use_container_width=True, hide_index=True)
-
-                pending = pending[pending["airtable_state"] != "already opted out"]
-                if pending.empty:
-                    st.success("Every uncertain contact is already opted out. Nothing to decide.")
-                    st.stop()
-
-                editor_cols = [c for c in ["message_record_id", "message_timestamp", "contact_name",
-                                           "contact_cell", "airtable_state", "funeral_home",
-                                           "message_content", "reasoning"] if c in pending.columns]
-                grid = pending[editor_cols].copy()
-                grid.insert(0, "Opt out", False)
-
-                edited = st.data_editor(
-                    grid,
-                    hide_index=True,
-                    use_container_width=True,
-                    disabled=[c for c in editor_cols],
-                    column_config={
-                        "Opt out": st.column_config.CheckboxColumn(
-                            "Opt out", help="Tick to set Opt-Out on this contact in Airtable"
-                        ),
-                        "message_record_id": None,
-                        "message_content": st.column_config.TextColumn("Message", width="large"),
-                    },
-                    key="review_editor",
-                )
-
-                chosen = edited[edited["Opt out"]] if "Opt out" in edited else pd.DataFrame()
-                b1, b2 = st.columns([1, 3])
-
-                with b1:
-                    preview = st.button("Preview", use_container_width=True,
-                                        help="Dry run - shows what would change, writes nothing")
-                    confirm = st.checkbox("I'm sure", key="apply_confirm")
-                    do_apply = st.button("Apply to Airtable", type="primary",
-                                         use_container_width=True, disabled=not confirm)
-
-                with b2:
-                    st.caption(f"**{len(chosen)}** of {len(edited)} ticked.")
-
-                if preview or do_apply:
-                    payload = {
-                        "approvals": [
-                            {"message_record_id": r["message_record_id"], "approve": True}
-                            for _, r in chosen.iterrows()
-                        ],
-                        "apply": bool(do_apply),
-                    }
-                    with st.spinner("Talking to Airtable..."):
-                        result = _call_apply(payload)
-                    if result.get("error"):
-                        st.error(result["error"])
-                    elif do_apply:
-                        st.success(f"Applied. {result.get('updated', 0)} contact(s) set to Opt-Out.")
-                        st.json(result)
-                        st.cache_data.clear()
-                    else:
-                        st.info(f"Dry run - {result.get('wouldChangeCount', 0)} contact(s) would change. "
-                                "Nothing was written.")
-                        st.json(result)
 
     # ---- Twilio errors -----------------------------------------------------------
     with tab_errors:
@@ -545,18 +652,65 @@ def render_sms_health() -> None:
             g1.metric("Permanently blocked numbers", blocked["contact_cell"].nunique())
             g2.metric("Of those, invisible in Airtable", invisible["contact_cell"].nunique())
 
-            summary = (
-                invisible.groupby("contact_cell")
-                .agg(failed_sends=("twilio_sid", "count"),
-                     first_seen=("message_timestamp", "min"),
-                     last_seen=("message_timestamp", "max"),
-                     error_code=("error_code", "first"))
-                .reset_index()
-                .sort_values("failed_sends", ascending=False)
-            )
-            summary["error"] = summary["error_code"].apply(_pretty_code)
-            st.dataframe(summary, use_container_width=True, hide_index=True)
-            _csv_download(summary, "invisible_opt_outs", "dl_invisible")
+            if invisible.empty:
+                st.success("Nothing invisible in this window.")
+            else:
+                summary = (
+                    invisible.groupby("contact_cell")
+                    .agg(failed_sends=("twilio_sid", "count"),
+                         first_seen=("message_timestamp", "min"),
+                         last_seen=("message_timestamp", "max"),
+                         error_code=("error_code", "first"))
+                    .reset_index()
+                    .sort_values("failed_sends", ascending=False)
+                )
+                summary["error"] = summary["error_code"].apply(_pretty_code)
+                st.dataframe(summary, use_container_width=True, hide_index=True)
+                _csv_download(summary, "invisible_opt_outs", "dl_invisible")
+
+    # ---- Signals we cannot action -------------------------------------------------
+    with tab_blocked:
+        st.caption(
+            "Opt-out signals with no usable contact behind them: the Airtable message "
+            "has no Contact link, or the linked contact's Contact Cell is missing or "
+            "truncated. These cannot be applied by any automation, and they used to sit "
+            "in the review grid with a tick box that did nothing. They are an upstream "
+            "Airtable data problem, so fix the message or the contact record."
+        )
+        orphans = _fetch("v_opt_out_orphans",
+                         {"select": "*", "order": "message_timestamp.desc", "limit": 1000})
+        if orphans.empty:
+            st.success("Every open signal maps to a real contact. Nothing stuck.")
+        else:
+            st.metric("Signals that cannot be actioned", len(orphans))
+            cols = [c for c in ["message_timestamp", "classification", "blocker",
+                                "source_base", "funeral_home", "contact_name",
+                                "contact_cell", "contact_record_id", "message_content",
+                                "message_record_id"] if c in orphans.columns]
+            st.dataframe(orphans[cols], use_container_width=True, hide_index=True)
+            _csv_download(orphans[cols], "opt_out_cannot_action", "dl_orphans")
+
+    # ---- Audit log ----------------------------------------------------------------
+    with tab_audit:
+        st.caption(
+            "Every opt-out this app has applied, one row per contact record per "
+            "attempt, with who did it and why."
+        )
+        actions = _fetch("opt_out_actions",
+                         {"select": "*", "order": "requested_at.desc", "limit": 2000})
+        if actions.empty:
+            st.info("No opt-outs have been applied from this app yet.")
+        else:
+            a1, a2, a3 = st.columns(3)
+            a1.metric("Total actions", len(actions))
+            a2.metric("Applied", int((actions["result"] == "applied").sum()))
+            a3.metric("Failed", int((actions["result"] == "failed").sum()))
+            cols = [c for c in ["requested_at", "applied_at", "result", "actor", "reason",
+                                "scope", "contact_name", "phone_raw", "funeral_home",
+                                "base_id", "contact_record_id", "error_message"]
+                    if c in actions.columns]
+            st.dataframe(actions[cols], use_container_width=True, hide_index=True)
+            _csv_download(actions[cols], "opt_out_actions", "dl_actions")
 
     # ---- Pipeline health ---------------------------------------------------------
     with tab_health:
