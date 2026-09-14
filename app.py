@@ -18,6 +18,19 @@ from task_store import (
     load_members, add_member, update_member, delete_member,
 )
 from sms_health import render_sms_health
+# Recurring tab (Supabase-backed). Imported defensively: a problem in this module
+# must degrade to a message inside its own tab, never take the whole app down.
+try:
+    from tt_recurring import render_recurring
+    _TT_IMPORT_ERROR = None
+except Exception as _exc:  # noqa: BLE001
+    _TT_IMPORT_ERROR = str(_exc)
+
+    def render_recurring():
+        st.error(
+            "The Recurring tab could not load. Check that tt_recurring.py is in the "
+            f"repo root and that its imports are installed.\n\nDetail: {_TT_IMPORT_ERROR}"
+        )
 
 # ── Config ────────────────────────────────────────────────────────────────────
 # Airtable credentials come from Streamlit secrets (Settings → Secrets) or the
@@ -2728,8 +2741,8 @@ def render_tasks():
         tasks = [t for t in tasks if _in_range(t)]
 
     # ── Task Board tabs ───────────────────────────────────────────────────
-    tb_all, tb_daily, tb_weekly, tb_monthly, tb_oneoff = st.tabs(
-        ["All", "Daily", "Weekly", "Monthly", "One-Off"]
+    tb_all, tb_daily, tb_weekly, tb_monthly, tb_oneoff, tb_recurring = st.tabs(
+        ["All", "Daily", "Weekly", "Monthly", "One-Off", "Recurring"]
     )
     with tb_all:
         st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
@@ -2751,6 +2764,13 @@ def render_tasks():
         st.markdown('<div class="section-wrap">', unsafe_allow_html=True)
         _render_task_tab("one-off", tasks)
         st.markdown("</div>", unsafe_allow_html=True)
+    with tb_recurring:
+        # Recurring Task Tracker, backed by Supabase (tt_recurring.py).
+        # Daily / weekly / monthly schedules and the dated instances they generate.
+        try:
+            render_recurring()
+        except Exception as exc:  # noqa: BLE001 - keep the rest of the page alive
+            st.error(f"The Recurring tab hit an error: {exc}")
 
 
 # ══════════════════════════════════════════════════════════════
