@@ -218,7 +218,8 @@ def _load_defs() -> pd.DataFrame:
     return _fetch("tt_recurring_defs", {
         "select": ("id,title,description,category,priority,client_id,frequency,interval_n,"
                    "weekday,day_of_month,grace_days,active,paused_until,next_due_date,"
-                   "last_generated_on,source,links,notes,report_sheet_url,recipients,updated_at"),
+                   "last_generated_on,source,links,notes,report_sheet_url,recipients,"
+                   "period_unit,period_offset,rollover,updated_at"),
         "order": "frequency.asc,title.asc",
     })
 
@@ -227,10 +228,21 @@ def _load_instances() -> pd.DataFrame:
     return _fetch("tt_tasks", {
         "select": ("id,title,description,category,status,priority,due_date,client_id,source,"
                    "links,notes,recurring_def_id,occurrence_date,report_sheet_url,completed_at,"
-                   "updated_at"),
+                   "period_start,period_end,period_label,updated_at"),
         "recurring_def_id": "not.is.null",
         "order": "due_date.asc,title.asc",
     })
+
+
+def _load_steps() -> pd.DataFrame:
+    return _fetch("tt_task_steps", {
+        "select": "id,task_id,step_key,label,sort_order,done,done_at",
+        "order": "task_id.asc,sort_order.asc",
+    })
+
+
+def _load_progress() -> pd.DataFrame:
+    return _fetch("tt_task_progress", {"select": "task_id,total_steps,done_steps,pct"})
 
 
 def _load_completions() -> pd.DataFrame:
@@ -248,11 +260,12 @@ def _load_assignees() -> pd.DataFrame:
 # Instance grid
 # --------------------------------------------------------------------------------------
 
-INSTANCE_READONLY = ["Title", "Description", "Type", "Client", "Source", "Sheet"]
+INSTANCE_READONLY = ["Title", "Description", "Type", "Period", "Progress", "Client", "Source", "Sheet"]
 
 
 def _instance_frame(inst: pd.DataFrame, defs: pd.DataFrame, clients: pd.DataFrame,
-                    members: pd.DataFrame, assignees: pd.DataFrame) -> pd.DataFrame:
+                    members: pd.DataFrame, assignees: pd.DataFrame,
+                    progress: pd.DataFrame | None = None) -> pd.DataFrame:
     """Shape the instances into the column set the Airtable page uses."""
     if inst.empty:
         return pd.DataFrame()
@@ -266,10 +279,23 @@ def _instance_frame(inst: pd.DataFrame, defs: pd.DataFrame, clients: pd.DataFram
         for _, row in assignees.iterrows():
             first_assignee.setdefault(row["task_id"], member_by_id.get(row["member_id"], ""))
 
+    done_by_task, total_by_task = {}, {}
+    if progress is not None and not progress.empty:
+        done_by_task = progress.set_index("task_id")["done_steps"].to_dict()
+        total_by_task = progress.set_index("task_id")["total_steps"].to_dict()
+
+    def _progress_label(task_id) -> str:
+        total = total_by_task.get(task_id, 0) or 0
+        if not total:
+            return ""
+        return f"{int(done_by_task.get(task_id, 0) or 0)} / {int(total)}"
+
     out = pd.DataFrame({
         "id": inst["id"],
         "Done": inst["status"].eq("done"),
         "Title": inst["title"],
+        "Period": inst["period_label"].fillna(""),
+        "Progress": inst["id"].map(_progress_label),
         "Description": inst["description"].fillna(""),
         "Type": inst["recurring_def_id"].map(lambda d: FREQUENCY_LABELS.get(freq_by_def.get(d), "")),
         "Priority": inst["priority"],
@@ -283,18 +309,24 @@ def _instance_frame(inst: pd.DataFrame, defs: pd.DataFrame, clients: pd.DataFram
         "Sheet": inst["report_sheet_url"].fillna(""),
         "_updated_at": inst["updated_at"],
         "_freq": inst["recurring_def_id"].map(lambda d: freq_by_def.get(d, "")),
+        "_period_start": pd.to_datetime(inst["period_start"], errors="coerce").dt.date,
+        "_pct": inst["id"].map(lambda i: (
+            None if not (total_by_task.get(i) or 0)
+            else round(100 * (done_by_task.get(i, 0) or 0) / total_by_task[i])
+        )),
     })
     return out
 
 
 def _render_instance_grid(frame: pd.DataFrame, statuses: list[str], priorities: list[str],
-                          member_names: list[str], key_prefix: str) -> None:
+                          member_names: list[str], key_prefix: str,
+                          steps: pd.DataFrame | None = None) -> None:
     if frame.empty:
         st.info("Nothing scheduled here yet. Generated tasks appear once their cycle comes round.")
         return
 
-    display_cols = ["Done", "Title", "Description", "Type", "Priority", "Status", "Due Date",
-                    "Assigned To", "Client", "Source", "Notes", "Links", "Sheet"]
+    display_cols = ["Done", "Title", "Period", "Progress", "Description", "Type", "Priority",
+                    "Status", "Due Date", "Assigned To", "Client", "Source", "Notes", "Links", "Sheet"]
     grid = frame[["id"] + display_cols].copy()
 
     edited = st.data_editor(
@@ -308,6 +340,12 @@ def _render_instance_grid(frame: pd.DataFrame, statuses: list[str], priorities: 
                 "Done", help="Ticking this logs a completion and computes whether it was on time",
                 width="small"),
             "Title": st.column_config.TextColumn("Title", width="large"),
+            "Period": st.column_config.TextColumn(
+                "Period", width="small",
+                help="The period the work covers, not the due date. A monthly report "
+                     "generated on Oct 1 covers September."),
+            "Progress": st.column_config.TextColumn(
+                "Steps", width="small", help="Steps completed. Tick them in the panel below the grid."),
             "Description": st.column_config.TextColumn("Description", width="medium"),
             "Type": st.column_config.TextColumn("Type", width="small"),
             "Priority": st.column_config.SelectboxColumn("Priority", options=priorities, width="small"),
@@ -342,9 +380,72 @@ def _render_instance_grid(frame: pd.DataFrame, statuses: list[str], priorities: 
     if save:
         _save_instance_changes(frame, changed)
 
+    _render_step_panel(frame, steps, key_prefix)
+
     st.divider()
     _csv_download(edited.drop(columns=["id"], errors="ignore"), f"recurring_{key_prefix}",
                   f"dl_{key_prefix}")
+
+
+def _render_step_panel(frame: pd.DataFrame, steps: pd.DataFrame | None, key_prefix: str) -> None:
+    """Tick the checklist for one task at a time. Ticking the last step closes the task."""
+    if steps is None or steps.empty or frame.empty:
+        return
+
+    open_rows = frame[~frame["Done"]]
+    open_rows = open_rows[open_rows["Progress"].astype(str).str.len() > 0]
+    if open_rows.empty:
+        return
+
+    st.divider()
+    st.markdown("**Steps**")
+
+    def _label(row) -> str:
+        period = f" · {row['Period']}" if row["Period"] else ""
+        return f"{row['Title']}{period}  ({row['Progress']})"
+
+    options = {int(r["id"]): _label(r) for _, r in open_rows.iterrows()}
+    picked = st.selectbox(
+        "Task",
+        options=list(options.keys()),
+        format_func=lambda i: options[i],
+        key=f"steps_pick_{key_prefix}",
+        label_visibility="collapsed",
+    )
+    if picked is None:
+        return
+
+    mine = steps[steps["task_id"] == picked].sort_values("sort_order")
+    if mine.empty:
+        st.caption("No steps on this task.")
+        return
+
+    pct = int(round(100 * mine["done"].sum() / len(mine)))
+    st.progress(pct / 100, text=f"{int(mine['done'].sum())} of {len(mine)} steps")
+
+    cols = st.columns(min(len(mine), 4))
+    for i, (_, s) in enumerate(mine.iterrows()):
+        with cols[i % len(cols)]:
+            ticked = st.checkbox(
+                s["label"],
+                value=bool(s["done"]),
+                key=f"step_{key_prefix}_{int(s['id'])}",
+                disabled=not _can_write(),
+            )
+            if ticked != bool(s["done"]):
+                good, msg = _rpc("tt_tick_step", {
+                    "p_step_id": int(s["id"]),
+                    "p_done": bool(ticked),
+                    "p_actor": "streamlit",
+                })
+                if good:
+                    _clear_cache()
+                    st.rerun()
+                else:
+                    st.error(f"Could not update that step: {msg}")
+
+    if not _can_write():
+        st.caption("Read-only: add TT_SUPABASE_SERVICE_KEY to the app secrets to tick steps.")
 
 
 def _diff(before: pd.DataFrame, after: pd.DataFrame, cols: list[str]) -> dict:
@@ -479,18 +580,22 @@ def _render_schedules(defs: pd.DataFrame, clients: pd.DataFrame, completions: pd
         "Client": defs["client_id"].map(lambda c: client_by_id.get(c, "")),
         "Next due": pd.to_datetime(defs["next_due_date"], errors="coerce").dt.date,
         "Grace days": defs["grace_days"],
+        "Covers": defs["period_offset"].map(
+            lambda o: "this period" if (o or 0) == 0 else f"{abs(int(o))} period(s) back"),
+        "Period offset": defs["period_offset"].fillna(0).astype(int),
+        "Rollover": defs["rollover"].fillna("keep"),
         "On time": defs["id"].map(lambda i: rate.get(i, "-")),
         "Notes": defs["notes"].fillna(""),
     })
 
     display_cols = ["Active", "Title", "Type", "Anchor", "Priority", "Client", "Next due",
-                    "Grace days", "On time", "Notes"]
+                    "Grace days", "Covers", "Period offset", "Rollover", "On time", "Notes"]
 
     edited = st.data_editor(
         grid[["id"] + display_cols],
         hide_index=True,
         use_container_width=True,
-        disabled=["id", "Title", "Type", "Anchor", "Client", "On time"],
+        disabled=["id", "Title", "Type", "Anchor", "Client", "Covers", "On time"],
         column_config={
             "id": None,
             "Active": st.column_config.CheckboxColumn("Active", width="small"),
@@ -501,6 +606,17 @@ def _render_schedules(defs: pd.DataFrame, clients: pd.DataFrame, completions: pd
             "Client": st.column_config.TextColumn("Client", width="medium"),
             "Next due": st.column_config.DateColumn("Next due", format="YYYY-MM-DD", width="small"),
             "Grace days": st.column_config.NumberColumn("Grace", min_value=0, max_value=31, width="small"),
+            "Covers": st.column_config.TextColumn(
+                "Covers", width="small",
+                help="Which period each generated task is labelled for, relative to when it lands."),
+            "Period offset": st.column_config.NumberColumn(
+                "Offset", min_value=-12, max_value=0, step=1, width="small",
+                help="0 = the current period. -1 = the previous one, which is what a monthly "
+                     "report landing on the 1st should use."),
+            "Rollover": st.column_config.SelectboxColumn(
+                "Rollover", options=["keep", "supersede"], width="small",
+                help="keep = every occurrence stays open until you finish it. "
+                     "supersede = older open instances auto-close when a new cycle generates."),
             "On time": st.column_config.TextColumn("On time", width="small",
                                                    help="Cycles completed on time out of cycles completed"),
             "Notes": st.column_config.TextColumn("Notes", width="large"),
@@ -531,6 +647,10 @@ def _render_schedules(defs: pd.DataFrame, clients: pd.DataFrame, completions: pd
                     payload["next_due_date"] = str(val) if val else None
                 elif col == "Grace days":
                     payload["grace_days"] = int(val or 0)
+                elif col == "Period offset":
+                    payload["period_offset"] = int(val or 0)
+                elif col == "Rollover":
+                    payload["rollover"] = val or "keep"
                 elif col == "Notes":
                     payload["notes"] = val or None
             if payload:
@@ -567,12 +687,14 @@ def render_recurring() -> None:
     members = _load_members()
     completions = _load_completions()
     assignees = _load_assignees()
+    steps = _load_steps()
+    progress = _load_progress()
 
     statuses = _load_options("status") or ["new", "todo", "in_progress", "waiting", "done"]
     priorities = _load_options("priority") or ["P1", "P2", "P3"]
     member_names = members["name"].tolist() if not members.empty else []
 
-    frame = _instance_frame(inst, defs, clients, members, assignees)
+    frame = _instance_frame(inst, defs, clients, members, assignees, progress)
     today = local_today()
 
     open_rows = frame[~frame["Done"]] if not frame.empty else frame
@@ -614,6 +736,32 @@ def render_recurring() -> None:
             icon=None,
         )
 
+    # Period filter. Superseded rows are hidden unless asked for, so the board
+    # shows the live cycle rather than every instance ever generated.
+    f1, f2 = st.columns([2, 1])
+    with f1:
+        periods = (
+            [] if frame.empty
+            else frame.sort_values("_period_start", ascending=False)["Period"]
+                      .dropna().replace("", pd.NA).dropna().unique().tolist()
+        )
+        period_pick = st.selectbox(
+            "Period", ["All periods"] + periods, key="period_filter",
+            help="Which cycle the work covers. Monthly reports are labelled by the month "
+                 "of the data, not the month they land in.",
+        )
+    with f2:
+        show_superseded = st.checkbox(
+            "Show superseded", value=False, key="show_superseded",
+            help="Older instances auto-closed when a newer cycle was generated.",
+        )
+
+    if not frame.empty:
+        if period_pick != "All periods":
+            frame = frame[frame["Period"] == period_pick]
+        if not show_superseded:
+            frame = frame[frame["Status"] != "superseded"]
+
     tab_all, tab_daily, tab_weekly, tab_monthly, tab_sched = st.tabs(
         ["All", "Daily", "Weekly", "Monthly", "Schedules"]
     )
@@ -624,13 +772,13 @@ def render_recurring() -> None:
         return frame[frame["_freq"] == freq]
 
     with tab_all:
-        _render_instance_grid(frame, statuses, priorities, member_names, "all")
+        _render_instance_grid(frame, statuses, priorities, member_names, "all", steps)
     with tab_daily:
-        _render_instance_grid(_subset("daily"), statuses, priorities, member_names, "daily")
+        _render_instance_grid(_subset("daily"), statuses, priorities, member_names, "daily", steps)
     with tab_weekly:
-        _render_instance_grid(_subset("weekly"), statuses, priorities, member_names, "weekly")
+        _render_instance_grid(_subset("weekly"), statuses, priorities, member_names, "weekly", steps)
     with tab_monthly:
-        _render_instance_grid(_subset("monthly"), statuses, priorities, member_names, "monthly")
+        _render_instance_grid(_subset("monthly"), statuses, priorities, member_names, "monthly", steps)
     with tab_sched:
         st.caption(
             "The definitions behind the tasks. Editing one changes every future instance, "
